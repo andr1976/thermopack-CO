@@ -181,8 +181,8 @@ contains
     real, intent(out), optional :: alp_Tn(nce), alp_nn(nce,nce)
     ! Locals
     real :: rho
-    real, pointer :: alp_V_p, alp_VV_p, alp_Vn_p(:)
-    real, target :: alp_V_l, alp_VV_l, alp_Vn_l(nce)
+    real, pointer :: alp_V_p, alp_VV_p, alp_Vn_p(:), alp_VT_p
+    real, target :: alp_V_l, alp_VV_l, alp_Vn_l(nce), alp_VT_l
 
     if ( present(alp_v) .or. &
          present(alp_vv) .or. &
@@ -205,21 +205,30 @@ contains
     else
       alp_Vn_p => NULL()
     endif
+   ! Here 
+   if ( present(alp_VT) .or. &
+         present(alp_Tn)) then
+      alp_VT_p => alp_VT_l
+    else
+      alp_VT_p => NULL()
+    endif
 
     rho = sum(n)/V
     call eos%alpha_disp(rho,T,n,alp=alp,alp_rho=alp_V_p,alp_T=alp_T,alp_n=alp_n, &
-         alp_rhorho=alp_VV_l,alp_rhoT=alp_VT,alp_rhon=alp_Vn_l,alp_TT=alp_TT,&
+         alp_rhorho=alp_VV_l,alp_rhoT=alp_VT_p,alp_rhon=alp_Vn_l,alp_TT=alp_TT,&
          alp_Tn=alp_Tn,alp_nn=alp_nn)
 
     if (present(alp_nn)) then
       alp_nn(1,1) = alp_nn(1,1) + alp_VV_l/V**2 + alp_Vn_l(1)/V
+
     end if
-    if (present(alp_Tn)) alp_Tn = alp_VT/V + alp_Tn
-    if (present(alp_VT)) alp_VT = -(rho/V)*alp_VT
+    if (present(alp_Tn)) alp_Tn = alp_VT_l/V + alp_Tn
+    if (present(alp_VT)) alp_VT = -(rho/V)*alp_VT_l
     if (present(alp_Vn)) alp_Vn = -alp_V_l/V**2-rho*alp_Vn_l/V-(rho/V**2)*alp_VV_l
     if (present(alp_VV)) alp_VV = 2*rho/V**2*alp_V_l + (rho/V)**2*alp_VV_l
     if (present(alp_n)) alp_n = alp_V_l/V + alp_n
     if (present(alp_V)) alp_V = -(rho/V)*alp_V_l
+
 
   end subroutine alpha_disp_TVn
 
