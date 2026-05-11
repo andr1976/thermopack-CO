@@ -887,6 +887,10 @@ public abstract class ThermoPackPropertyPackageBase :
         {
             if (_sharedLib != null) return;
 
+            // Must register assembly resolver before any System.Text.Json usage
+            // (Load/IStream can call EnsureStaticInit before Initialize)
+            AssemblyResolver.Initialize();
+
             var asmDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) ?? "";
             Log($"EnsureStaticInit: asmDir={asmDir}");
 
