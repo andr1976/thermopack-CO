@@ -2,7 +2,8 @@ syntax: glob
 
 objects
 bin
-installed/
+installed/*
+!installed/bin/
 build/
 dist/
 run*
@@ -60,3 +61,9 @@ venv*
 *.vscode
 scripts/
 !.github/scripts/
+
+# CAPE-OPEN assembly and native thermopack libraries
+!capeopen/lib/*.dll
+!installed/bin/libthermopack.so
+!installed/bin/thermopack.dll
+!installed/bin/libthermopack.dylib
