@@ -26,25 +26,12 @@
   </ItemGroup>
 
   <!-- CO-LaN CAPE-OPEN 1.1 Primary Interop Assembly -->
-  <!-- Use system install if available, otherwise fall back to local copy in repo -->
-  <Choose>
-    <When Condition="Exists('$(LOCALAPPDATA)\Programs\Common\CAPE-OPEN\Reference Assemblies\CAPE-OPENv1-1-0.dll')">
-      <ItemGroup>
-        <Reference Include="CAPE-OPENv1-1-0">
-          <HintPath>$(LOCALAPPDATA)\Programs\Common\CAPE-OPEN\Reference Assemblies\CAPE-OPENv1-1-0.dll</HintPath>
-          <Private>false</Private>
-        </Reference>
-      </ItemGroup>
-    </When>
-    <Otherwise>
-      <ItemGroup>
-        <Reference Include="CAPE-OPENv1-1-0">
-          <HintPath>..\lib\CAPE-OPENv1-1-0.dll</HintPath>
-          <Private>false</Private>
-        </Reference>
-      </ItemGroup>
-    </Otherwise>
-  </Choose>
+  <ItemGroup>
+    <Reference Include="CAPE-OPENv1-1-0">
+      <HintPath>$(LOCALAPPDATA)\Programs\Common\CAPE-OPEN\Reference Assemblies\CAPE-OPENv1-1-0.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
 
   <!-- Native library is copied transitively from ThermoPack.Core -->
   <!-- Fluids directory is also copied transitively -->
