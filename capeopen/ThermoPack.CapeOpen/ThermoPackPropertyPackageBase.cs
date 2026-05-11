@@ -1054,15 +1054,7 @@ public abstract class ThermoPackPropertyPackageBase :
         double[] x = phaseLabel == PhaseVapour
             ? FitArray(_lastResult.Y, nc)
             : FitArray(_lastResult.X, nc);
-
-        // Ensure composition sums to 1
-        double xsum = 0;
-        for (int i = 0; i < x.Length; i++) xsum += x[i];
-        if (xsum < 1e-30)
-        {
-            x = new double[nc];
-            if (nc > 0) x[0] = 1.0;
-        }
+        SanitizeAndNormalize(x);
 
         switch (prop.ToLowerInvariant())
         {
@@ -1201,17 +1193,18 @@ public abstract class ThermoPackPropertyPackageBase :
         double betaV = result.BetaV;
         double betaL = result.BetaL;
 
-        // Prepare per-phase composition arrays
+        // Prepare per-phase composition arrays (sanitize + normalize to sum=1)
         double[] xLiq = FitArray(result.X, nc);
         double[] yVap = FitArray(result.Y, nc);
-        SanitizeArray(xLiq);
-        SanitizeArray(yVap);
+        SanitizeAndNormalize(xLiq);
+        SanitizeAndNormalize(yVap);
 
         // Compute overall fraction consistent with phase data: z_i = betaV*y_i + betaL*x_i
-        // This ensures COFE's mass balance check passes exactly.
+        // Then normalize to ensure it sums to exactly 1.0.
         var overallFraction = new double[nc];
         for (int i = 0; i < nc; i++)
             overallFraction[i] = betaV * yVap[i] + betaL * xLiq[i];
+        SanitizeAndNormalize(overallFraction);
 
         // Write overall T, P, and consistent overall fraction
         try { wrapper.SetOverallProp("temperature", "", new[] { T }); } catch { }
@@ -1503,11 +1496,20 @@ public abstract class ThermoPackPropertyPackageBase :
         }
     }
 
-    private static void SanitizeArray(double[] arr)
+    private static void SanitizeAndNormalize(double[] arr)
     {
+        double sum = 0;
         for (int i = 0; i < arr.Length; i++)
-            if (double.IsNaN(arr[i]) || double.IsInfinity(arr[i]))
+        {
+            if (double.IsNaN(arr[i]) || double.IsInfinity(arr[i]) || arr[i] < 0)
                 arr[i] = 0;
+            sum += arr[i];
+        }
+        if (sum > 1e-30)
+        {
+            for (int i = 0; i < arr.Length; i++)
+                arr[i] /= sum;
+        }
     }
 
     // ─── Diagnostic logging ──────────────────────────────────────────
