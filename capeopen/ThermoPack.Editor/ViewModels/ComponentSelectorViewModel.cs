@@ -83,10 +83,10 @@ public class ComponentSelectorViewModel : INotifyPropertyChanged
             if (SelectedComponents.Contains(c)) continue;
 
             if (string.IsNullOrEmpty(search) ||
-                c.Name.Contains(search, StringComparison.OrdinalIgnoreCase) ||
-                c.Ident.Contains(search, StringComparison.OrdinalIgnoreCase) ||
-                c.Formula.Contains(search, StringComparison.OrdinalIgnoreCase) ||
-                c.CasNumber.Contains(search, StringComparison.OrdinalIgnoreCase))
+                c.Name.IndexOf(search, StringComparison.OrdinalIgnoreCase) >= 0 ||
+                c.Ident.IndexOf(search, StringComparison.OrdinalIgnoreCase) >= 0 ||
+                c.Formula.IndexOf(search, StringComparison.OrdinalIgnoreCase) >= 0 ||
+                c.CasNumber.IndexOf(search, StringComparison.OrdinalIgnoreCase) >= 0)
             {
                 FilteredAvailable.Add(c);
             }
