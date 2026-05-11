@@ -18,7 +18,7 @@ public class Gerg2008PropertyPackage : ThermoPackPropertyPackageBase
 
     protected override void InitializeEngine(ThermoPackEngine engine, string compString)
     {
-        engine.InitMultiparameter(compString, "NIST_MEOS", "DEFAULT");
+        engine.InitMultiparameter(compString, "GERG2008", "DEFAULT");
     }
 
     [ComRegisterFunction]
