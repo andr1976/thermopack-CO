@@ -1,0 +1,15 @@
+/home/anra/github/thermopack-CO/capeopen/ThermoPack.Tests/bin/Debug/net8.0/ThermoPack.Tests
+/home/anra/github/thermopack-CO/capeopen/ThermoPack.Tests/bin/Debug/net8.0/ThermoPack.Tests.deps.json
+/home/anra/github/thermopack-CO/capeopen/ThermoPack.Tests/bin/Debug/net8.0/ThermoPack.Tests.runtimeconfig.json
+/home/anra/github/thermopack-CO/capeopen/ThermoPack.Tests/bin/Debug/net8.0/ThermoPack.Tests.dll
+/home/anra/github/thermopack-CO/capeopen/ThermoPack.Tests/bin/Debug/net8.0/ThermoPack.Tests.pdb
+/home/anra/github/thermopack-CO/capeopen/ThermoPack.Tests/obj/Debug/net8.0/ThermoPack.Tests.GeneratedMSBuildEditorConfig.editorconfig
+/home/anra/github/thermopack-CO/capeopen/ThermoPack.Tests/obj/Debug/net8.0/ThermoPack.Tests.AssemblyInfoInputs.cache
+/home/anra/github/thermopack-CO/capeopen/ThermoPack.Tests/obj/Debug/net8.0/ThermoPack.Tests.AssemblyInfo.cs
+/home/anra/github/thermopack-CO/capeopen/ThermoPack.Tests/obj/Debug/net8.0/ThermoPack.Tests.csproj.CoreCompileInputs.cache
+/home/anra/github/thermopack-CO/capeopen/ThermoPack.Tests/obj/Debug/net8.0/ThermoPack.Tests.sourcelink.json
+/home/anra/github/thermopack-CO/capeopen/ThermoPack.Tests/obj/Debug/net8.0/ThermoPack.Tests.dll
+/home/anra/github/thermopack-CO/capeopen/ThermoPack.Tests/obj/Debug/net8.0/refint/ThermoPack.Tests.dll
+/home/anra/github/thermopack-CO/capeopen/ThermoPack.Tests/obj/Debug/net8.0/ThermoPack.Tests.pdb
+/home/anra/github/thermopack-CO/capeopen/ThermoPack.Tests/obj/Debug/net8.0/ThermoPack.Tests.genruntimeconfig.cache
+/home/anra/github/thermopack-CO/capeopen/ThermoPack.Tests/obj/Debug/net8.0/ref/ThermoPack.Tests.dll
