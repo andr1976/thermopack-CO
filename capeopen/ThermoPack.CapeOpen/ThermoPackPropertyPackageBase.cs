@@ -106,16 +106,13 @@ public abstract class ThermoPackPropertyPackageBase :
         keyCompoundId = new[] { "", "" };
     }
 
-    public void GetPhaseInfo(string phaseLabel, string phaseAttribute, ref object value)
+    public object GetPhaseInfo(string phaseLabel, string phaseAttribute)
     {
         if (phaseAttribute.Equals("StateOfAggregation", StringComparison.OrdinalIgnoreCase))
         {
-            value = phaseLabel == PhaseVapour ? "Vapor" : "Liquid";
+            return phaseLabel == PhaseVapour ? "Vapor" : "Liquid";
         }
-        else
-        {
-            throw new COMException($"Unknown phase attribute: {phaseAttribute}");
-        }
+        throw new COMException($"Unknown phase attribute: {phaseAttribute}");
     }
 
     // ─── ICapeThermoCompounds ─────────────────────────────────────────
@@ -155,7 +152,7 @@ public abstract class ThermoPackPropertyPackageBase :
         casNos = cas;
     }
 
-    public void GetCompoundConstant(object props, object compIds, ref object propVals)
+    public object GetCompoundConstant(object props, object compIds)
     {
         var propNames = (string[])props;
         var ids = (string[])compIds;
@@ -165,45 +162,53 @@ public abstract class ThermoPackPropertyPackageBase :
         var result = new object[np];
         for (int p = 0; p < np; p++)
         {
+            string propLower = propNames[p].ToLowerInvariant();
+            if (propLower == "casregistrynumber")
+            {
+                var strVals = new string[nc];
+                for (int j = 0; j < nc; j++)
+                {
+                    var c2 = FindComponentByCas(ids[j]);
+                    strVals[j] = c2?.CasNumber ?? "";
+                }
+                result[p] = strVals;
+                continue;
+            }
+
             var values = new double[nc];
             for (int i = 0; i < nc; i++)
             {
                 var comp = FindComponentByCas(ids[i]);
                 if (comp == null) continue;
 
-                switch (propNames[p].ToLowerInvariant())
+                values[i] = propLower switch
                 {
-                    case "molecularweight":
-                        values[i] = comp.MolWeight;
-                        break;
-                    case "criticaltemperature":
-                        values[i] = comp.CriticalTemperature;
-                        break;
-                    case "criticalpressure":
-                        values[i] = comp.CriticalPressure;
-                        break;
-                    case "acentricfactor":
-                        values[i] = comp.AcentricFactor;
-                        break;
-                    case "casregistrynumber":
-                        // Return as string array
-                        var strVals = new string[nc];
-                        for (int j = 0; j < nc; j++)
-                        {
-                            var c2 = FindComponentByCas(ids[j]);
-                            strVals[j] = c2?.CasNumber ?? "";
-                        }
-                        result[p] = strVals;
-                        goto NextProp;
-                    default:
-                        values[i] = 0;
-                        break;
-                }
+                    "molecularweight" => comp.MolWeight,
+                    "criticaltemperature" => comp.CriticalTemperature,
+                    "criticalpressure" => comp.CriticalPressure,
+                    "acentricfactor" => comp.AcentricFactor,
+                    _ => 0
+                };
             }
             result[p] = values;
-            NextProp:;
         }
-        propVals = result;
+        return result;
+    }
+
+    public object GetConstPropList()
+    {
+        return new[] { "molecularWeight", "criticalTemperature", "criticalPressure",
+            "acentricFactor", "casRegistryNumber" };
+    }
+
+    public object GetTDependentPropList()
+    {
+        return new[] { "idealGasHeatCapacity" };
+    }
+
+    public object GetPDependentPropList()
+    {
+        return new string[0];
     }
 
     public void GetPDependentProperty(object props, double pressure, object compIds,
@@ -372,6 +377,12 @@ public abstract class ThermoPackPropertyPackageBase :
         WriteFlashResultToMaterial(wrapper, result, nc, feed, spec.Type);
     }
 
+    public bool CheckEquilibriumSpec(object specification1, object specification2, string solutionType)
+    {
+        try { ValidateFlashSpec(specification1, specification2); return true; }
+        catch { return false; }
+    }
+
     // ─── ICapeThermoPropertyRoutine ───────────────────────────────────
 
     public void CalcSinglePhaseProp(object props, string phaseLabel)
@@ -421,6 +432,45 @@ public abstract class ThermoPackPropertyPackageBase :
         }
     }
 
+    public void CalcAndGetLnPhi(string phaseLabel, double temperature, double pressure,
+        object moleNumbers, int fFlags, ref object lnPhi, ref object lnPhiDT,
+        ref object lnPhiDP, ref object lnPhiDn)
+    {
+        if (_selectedComponents.Count == 0)
+            throw new COMException("No compounds configured.");
+
+        EnsureInitialized();
+        if (_engine == null) throw new COMException("Engine not initialized.");
+
+        var moles = (double[])moleNumbers;
+        int nc = _selectedComponents.Count;
+        double total = 0;
+        int len = Math.Min(moles.Length, nc);
+        for (int i = 0; i < len; i++) total += moles[i];
+        if (total <= 0) { lnPhi = new double[nc]; return; }
+
+        var feed = new double[nc];
+        for (int i = 0; i < len; i++) feed[i] = moles[i] / total;
+
+        int phase = (phaseLabel == PhaseVapour || fFlags == 1)
+            ? _engine.VaporPhase : _engine.LiquidPhase;
+        lnPhi = _engine.LnFugacityCoefficients(temperature, pressure, feed, phase);
+    }
+
+    public bool CheckSinglePhasePropSpec(string property, string phaseLabel)
+    {
+        var supported = new[] { "enthalpy", "entropy", "internalenergy", "gibbsenergy",
+            "heatcapacitycp", "volume", "density", "compressibilityfactor",
+            "fugacitycoefficient", "logfugacitycoefficient", "fugacity",
+            "molecularweight", "phasefraction", "fraction" };
+        return Array.Exists(supported, p => p.Equals(property, StringComparison.OrdinalIgnoreCase));
+    }
+
+    public bool CheckTwoPhasePropSpec(string property, object phaseLabels)
+    {
+        return property.Equals("kvalue", StringComparison.OrdinalIgnoreCase);
+    }
+
     public object GetSinglePhasePropList()
     {
         return new[]
@@ -439,30 +489,20 @@ public abstract class ThermoPackPropertyPackageBase :
 
     // ─── ICapeThermoUniversalConstant ─────────────────────────────────
 
-    public void GetUniversalConstant(object props, ref object propVals)
+    public object GetUniversalConstant(string constantId)
     {
-        var propNames = (string[])props;
-        var values = new double[propNames.Length];
-
-        for (int i = 0; i < propNames.Length; i++)
+        return constantId.ToLowerInvariant() switch
         {
-            switch (propNames[i].ToLowerInvariant())
-            {
-                case "avogadroconstant":
-                    values[i] = 6.02214076e23;
-                    break;
-                case "boltzmannconstant":
-                    values[i] = 1.380649e-23;
-                    break;
-                case "molargasconstant":
-                    values[i] = _engine != null ? _engine.GetRgas() : 8.31446;
-                    break;
-                default:
-                    values[i] = 0;
-                    break;
-            }
-        }
-        propVals = values;
+            "avogadroconstant" => 6.02214076e23,
+            "boltzmannconstant" => 1.380649e-23,
+            "molargasconstant" => _engine != null ? _engine.GetRgas() : 8.31446,
+            _ => 0.0
+        };
+    }
+
+    public object GetUniversalConstantList()
+    {
+        return new[] { "avogadroConstant", "boltzmannConstant", "molarGasConstant" };
     }
 
     // ─── ICapeUtilities ───────────────────────────────────────────────
@@ -478,20 +518,29 @@ public abstract class ThermoPackPropertyPackageBase :
         EnsureStaticInit();
     }
 
-    public void Edit()
+    public int Edit()
     {
-        EnsureStaticInit();
-
-        var available = _sharedDb!.GetComponentsForEos(EosType);
-        var editorResult = EditorLauncher.ShowComponentEditor(
-            available, _selectedComponents, EosType);
-
-        if (editorResult != null)
+        try
         {
-            _selectedComponents = new List<Component>(editorResult);
-            _isDirty = true;
-            _lastResult = null;
-            RecreateEngine();
+            EnsureStaticInit();
+
+            var available = _sharedDb!.GetComponentsForEos(EosType);
+            var editorResult = EditorLauncher.ShowComponentEditor(
+                available, _selectedComponents, EosType);
+
+            if (editorResult != null)
+            {
+                _selectedComponents = new List<Component>(editorResult);
+                _isDirty = true;
+                _lastResult = null;
+                RecreateEngine();
+                return 0; // S_OK — compounds changed
+            }
+            return 1; // S_FALSE — cancelled
+        }
+        catch
+        {
+            return 1; // S_FALSE — error
         }
     }
 

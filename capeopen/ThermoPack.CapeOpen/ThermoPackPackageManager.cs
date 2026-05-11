@@ -38,9 +38,9 @@ public class ThermoPackPackageManager :
 
     // ─── ICapeThermoPropertyPackageManager ─────────────────────────────
 
-    public void GetPropertyPackageList(ref object packageList)
+    public object GetPropertyPackageList()
     {
-        packageList = PackageNames;
+        return (string[])PackageNames.Clone();
     }
 
     public object GetPropertyPackage(string packageName)
