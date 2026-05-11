@@ -19,9 +19,13 @@ public class ComponentDatabase
     public void LoadFromDirectory(string fluidsDir)
     {
         _components.Clear();
+        LoadErrors.Clear();
         if (!Directory.Exists(fluidsDir)) return;
 
-        foreach (var file in Directory.GetFiles(fluidsDir, "*.json"))
+        var files = Directory.GetFiles(fluidsDir, "*.json");
+        LoadErrors.Add($"Found {files.Length} JSON files in {fluidsDir}");
+
+        foreach (var file in files)
         {
             try
             {
@@ -29,12 +33,15 @@ public class ComponentDatabase
                 if (comp != null)
                     _components.Add(comp);
             }
-            catch
+            catch (Exception ex)
             {
-                // Skip malformed files
+                LoadErrors.Add($"{Path.GetFileName(file)}: {ex.GetType().Name}: {ex.Message}");
             }
         }
     }
+
+    /// <summary>Diagnostic errors from the last LoadFromDirectory call.</summary>
+    public List<string> LoadErrors { get; } = new();
 
     private static Component? ParseFluidJson(string path)
     {

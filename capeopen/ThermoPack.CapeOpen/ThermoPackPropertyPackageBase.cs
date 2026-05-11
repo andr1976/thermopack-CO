@@ -898,6 +898,11 @@ public abstract class ThermoPackPropertyPackageBase :
             if (_fluidsDir != null)
                 _sharedDb.LoadFromDirectory(_fluidsDir);
             Log($"EnsureStaticInit: loaded {_sharedDb.Components.Count} components");
+            if (_sharedDb.Components.Count == 0 && _sharedDb.LoadErrors.Count > 0)
+            {
+                foreach (var err in _sharedDb.LoadErrors.Take(5))
+                    Log($"  DB: {err}");
+            }
 
             _sharedLib = new ThermoPackLibrary();
             try
