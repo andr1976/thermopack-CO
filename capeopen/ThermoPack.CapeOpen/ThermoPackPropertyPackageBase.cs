@@ -704,10 +704,13 @@ public abstract class ThermoPackPropertyPackageBase :
         {
             // Serialize EOS type + CAS list as string for COFE instance transfer
             var casString = string.Join(";", _selectedComponents.Select(c => c.CasNumber));
-            return $"{(int)EosType};{casString}";
+            var val = $"{(int)EosType};{casString}";
+            Log($"parameters GET: {_selectedComponents.Count} components, value=\"{val}\"");
+            return val;
         }
         set
         {
+            Log($"parameters SET: value=\"{value}\"");
             if (value is string s && !string.IsNullOrWhiteSpace(s))
             {
                 var tokens = s.Split(';');
@@ -722,6 +725,7 @@ public abstract class ThermoPackPropertyPackageBase :
                         if (cas.Length == 0) continue;
                         var comp = _sharedDb?.FindByCas(cas);
                         if (comp != null) restored.Add(comp);
+                        else Log($"parameters SET: CAS '{cas}' not found in database");
                     }
                     if (restored.Count > 0)
                     {
@@ -729,6 +733,11 @@ public abstract class ThermoPackPropertyPackageBase :
                         SyncShared();
                         _lastResult = null;
                         RecreateEngine();
+                        Log($"parameters SET: restored {restored.Count} components");
+                    }
+                    else
+                    {
+                        Log("parameters SET: no components resolved");
                     }
                 }
             }
@@ -749,35 +758,48 @@ public abstract class ThermoPackPropertyPackageBase :
 
     public void Load(IStream pStm)
     {
-        using (var stream = new ComStreamWrapper(pStm))
-        using (var reader = new BinaryReader(stream))
+        Log("Load(IStream) called");
+        try
         {
-            int version = reader.ReadInt32();
-            if (version < 1) throw new InvalidDataException($"Unsupported stream version: {version}");
-
-            int eosInt = reader.ReadInt32(); // Read but we use our own EosType
-            int count = reader.ReadInt32();
-
-            EnsureStaticInit();
-
-            var compList = new List<Component>();
-            for (int i = 0; i < count; i++)
+            using (var stream = new ComStreamWrapper(pStm))
+            using (var reader = new BinaryReader(stream))
             {
-                string cas = reader.ReadString();
-                var dbComp = _sharedDb!.FindByCas(cas);
-                if (dbComp != null) compList.Add(dbComp);
+                int version = reader.ReadInt32();
+                if (version < 1) throw new InvalidDataException($"Unsupported stream version: {version}");
+
+                int eosInt = reader.ReadInt32(); // Read but we use our own EosType
+                int count = reader.ReadInt32();
+                Log($"Load: version={version}, eos={eosInt}, count={count}");
+
+                EnsureStaticInit();
+
+                var compList = new List<Component>();
+                for (int i = 0; i < count; i++)
+                {
+                    string cas = reader.ReadString();
+                    var dbComp = _sharedDb!.FindByCas(cas);
+                    if (dbComp != null) compList.Add(dbComp);
+                    else Log($"Load: CAS '{cas}' not found in database");
+                }
+
+                _selectedComponents = compList;
+                SyncShared();
+                _isDirty = false;
+                Log($"Load: restored {compList.Count} of {count} components");
+
+                RecreateEngine();
             }
-
-            _selectedComponents = compList;
-            SyncShared();
-            _isDirty = false;
-
-            RecreateEngine();
+        }
+        catch (Exception ex)
+        {
+            Log($"Load FAILED: {ex}");
+            throw;
         }
     }
 
     public void Save(IStream pStm, [MarshalAs(UnmanagedType.Bool)] bool fClearDirty)
     {
+        Log($"Save(IStream) called: {_selectedComponents.Count} components, clearDirty={fClearDirty}");
         using (var stream = new ComStreamWrapper(pStm))
         using (var writer = new BinaryWriter(stream))
         {
