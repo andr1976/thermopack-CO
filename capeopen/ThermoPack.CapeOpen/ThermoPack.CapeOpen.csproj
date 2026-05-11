@@ -25,9 +25,10 @@
     <PackageReference Include="System.Text.Json" Version="8.0.5" />
   </ItemGroup>
 
+  <!-- CO-LaN CAPE-OPEN 1.1 Primary Interop Assembly: local copy in repo, fallback to system install -->
   <ItemGroup>
     <Reference Include="CAPE-OPENv1-1-0">
-      <HintPath>$(LOCALAPPDATA)\Programs\Common\CAPE-OPEN\Reference Assemblies\CAPE-OPENv1-1-0.dll</HintPath>
+      <HintPath>..\lib\CAPE-OPENv1-1-0.dll</HintPath>
       <Private>false</Private>
     </Reference>
   </ItemGroup>
