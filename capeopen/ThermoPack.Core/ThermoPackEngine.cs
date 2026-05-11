@@ -63,6 +63,7 @@ public class ThermoPackEngine : IDisposable
     private ThermoPackInterop.IdealEnthalpySingleDelegate? _idealEnthalpySingle;
     private ThermoPackInterop.CompMoleWeightDelegate? _compMoleWeight;
     private ThermoPackInterop.GetCriticalParamDelegate? _getCriticalParam;
+    private ThermoPackInterop.GuessPhaseCDelegate? _guessPhase;
 
     public int ComponentCount => _nc;
 
@@ -558,6 +559,23 @@ public class ThermoPackEngine : IDisposable
     public int MinGibbsPhase => _MINGIBBSPH;
     public int SinglePhase => _SINGLEPH;
 
+    /// <summary>
+    /// Guess whether a single-phase state is liquid or vapor using
+    /// pseudo-critical properties or volume/co-volume ratio.
+    /// Returns LIQPH or VAPPH.
+    /// </summary>
+    public int GuessPhase(double T, double P, double[] z)
+    {
+        if (_guessPhase == null) return _VAPPH; // fallback
+        lock (_lock)
+        {
+            Activate();
+            int phase = 0;
+            _guessPhase(ref T, ref P, z, ref phase);
+            return phase;
+        }
+    }
+
     // ─── Helper methods ───────────────────────────────────────────────
 
     private static byte[] ToFortranString(string s)
@@ -632,6 +650,14 @@ public class ThermoPackEngine : IDisposable
             "eos", "compmoleweight");
         _getCriticalParam = _lib.GetModuleDelegate<ThermoPackInterop.GetCriticalParamDelegate>(
             "eos", "getcriticalparam");
+
+        // Phase guessing (C-bound, no mangling)
+        try
+        {
+            _guessPhase = _lib.GetCDelegate<ThermoPackInterop.GuessPhaseCDelegate>(
+                "thermopack_guess_phase_c");
+        }
+        catch { /* Optional: not all builds may have this */ }
     }
 
     private void LoadPhaseFlags()

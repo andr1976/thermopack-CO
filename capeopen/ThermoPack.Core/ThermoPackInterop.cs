@@ -170,6 +170,13 @@ public static class ThermoPackInterop
         ref int twoph, ref int liqph, ref int vapph, ref int mingibbsph,
         ref int singleph, ref int solidph, ref int fakeph);
 
+    // ─── Phase guessing (C-bound, no mangling) ───────────────────────
+
+    /// <summary>thermopack_guess_phase_c(T, P, z, phase) — returns LIQPH or VAPPH for single-phase</summary>
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate void GuessPhaseCDelegate(
+        ref double T, ref double P, double[] z, ref int phase);
+
     // ─── Enthalpy with Cp derivative ──────────────────────────────────
 
     /// <summary>

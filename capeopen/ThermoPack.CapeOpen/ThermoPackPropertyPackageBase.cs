@@ -50,6 +50,9 @@ public abstract class ThermoPackPropertyPackageBase :
     private bool _loadedFromStream;
     private bool _isDirty;
 
+    // COM object references (must be released via Marshal.ReleaseComObject)
+    private object? _simulationContext;
+
     // Flash cache
     private FlashResult? _lastResult;
     private double _lastT;
@@ -82,12 +85,22 @@ public abstract class ThermoPackPropertyPackageBase :
 
     public void SetMaterial(object material)
     {
+        ReleaseMaterial();
         _material = material as ICapeThermoMaterial;
     }
 
     public void UnsetMaterial()
     {
-        _material = null;
+        ReleaseMaterial();
+    }
+
+    private void ReleaseMaterial()
+    {
+        if (_material != null)
+        {
+            try { Marshal.ReleaseComObject(_material); } catch { }
+            _material = null;
+        }
         _lastResult = null;
     }
 
@@ -367,6 +380,9 @@ public abstract class ThermoPackPropertyPackageBase :
                 throw new COMException($"Unsupported flash type: {spec.Type}");
         }
 
+        // Normalize single-phase results before caching
+        NormalizeFlashResult(result, feed, nc);
+
         // Cache
         _lastResult = result;
         _lastT = result.Temperature;
@@ -562,7 +578,15 @@ public abstract class ThermoPackPropertyPackageBase :
 
     public object simulationContext
     {
-        set { /* Not used */ }
+        get => _simulationContext!;
+        set
+        {
+            if (_simulationContext != null && !ReferenceEquals(_simulationContext, value))
+            {
+                try { Marshal.ReleaseComObject(_simulationContext); } catch { }
+            }
+            _simulationContext = value;
+        }
     }
 
     public void Initialize()
@@ -599,6 +623,12 @@ public abstract class ThermoPackPropertyPackageBase :
 
     public void Terminate()
     {
+        ReleaseMaterial();
+        if (_simulationContext != null)
+        {
+            try { Marshal.ReleaseComObject(_simulationContext); } catch { }
+            _simulationContext = null;
+        }
         _engine?.Dispose();
         _engine = null;
     }
@@ -685,6 +715,12 @@ public abstract class ThermoPackPropertyPackageBase :
 
     public void Dispose()
     {
+        ReleaseMaterial();
+        if (_simulationContext != null)
+        {
+            try { Marshal.ReleaseComObject(_simulationContext); } catch { }
+            _simulationContext = null;
+        }
         _engine?.Dispose();
         _engine = null;
     }
@@ -827,6 +863,7 @@ public abstract class ThermoPackPropertyPackageBase :
         try
         {
             _lastResult = _engine.TwoPhaseTPFlash(T, P, feed);
+            NormalizeFlashResult(_lastResult, feed, nc);
             _lastT = T; _lastP = P; _lastFeed = (double[])feed.Clone();
         }
         catch
@@ -999,8 +1036,12 @@ public abstract class ThermoPackPropertyPackageBase :
     private void WriteFlashResultToMaterial(MaterialObjectWrapper wrapper,
         FlashResult result, int nc, double[] feed, FlashType flashType)
     {
+        // Note: result has already been normalized by NormalizeFlashResult()
+        // so BetaV/BetaL are in [0,1] and phase is LIQPH or VAPPH.
         double T = result.Temperature;
         double P = result.Pressure;
+        double betaV = result.BetaV;
+        double betaL = result.BetaL;
 
         // Write overall T, P, and feed fraction
         try { wrapper.SetOverallProp("temperature", "", new[] { T }); } catch { }
@@ -1013,11 +1054,6 @@ public abstract class ThermoPackPropertyPackageBase :
             try
             {
                 double hMix = 0, sMix = 0, vMix = 0;
-                double betaV = result.BetaV;
-                double betaL = result.BetaL;
-                if (double.IsNaN(betaV)) betaV = 0;
-                if (double.IsNaN(betaL)) betaL = 0;
-
                 double[] xLiq = FitArray(result.X, nc);
                 double[] yVap = FitArray(result.Y, nc);
                 SanitizeArray(xLiq);
@@ -1049,21 +1085,21 @@ public abstract class ThermoPackPropertyPackageBase :
         // Determine present phases
         var labels = new List<string>();
         var statuses = new List<int>();
-
         bool forceTwo = flashType == FlashType.PVF || flashType == FlashType.TVF;
 
-        if (result.HasVapour || forceTwo)
+        if (betaV > 1e-12 || forceTwo)
         {
             labels.Add(PhaseVapour);
             statuses.Add(CapeAtEquilibrium);
         }
-        if (result.HasLiquid || forceTwo)
+        if (betaL > 1e-12 || forceTwo)
         {
             labels.Add(PhaseLiquid);
             statuses.Add(CapeAtEquilibrium);
         }
         if (labels.Count == 0)
         {
+            // Shouldn't happen after normalization, but be safe
             labels.Add(PhaseVapour);
             statuses.Add(CapeAtEquilibrium);
         }
@@ -1072,13 +1108,11 @@ public abstract class ThermoPackPropertyPackageBase :
 
         foreach (var label in labels)
         {
-            double beta = label == PhaseVapour ? result.BetaV : result.BetaL;
+            double beta = label == PhaseVapour ? betaV : betaL;
             double[] comp = label == PhaseVapour
                 ? FitArray(result.Y, nc)
                 : FitArray(result.X, nc);
-
             SanitizeArray(comp);
-            if (double.IsNaN(beta) || double.IsInfinity(beta)) beta = 0;
 
             wrapper.SetSinglePhaseProp("temperature", label, "", new[] { T });
             wrapper.SetSinglePhaseProp("pressure", label, "", new[] { P });
@@ -1220,6 +1254,65 @@ public abstract class ThermoPackPropertyPackageBase :
         for (int i = 0; i < a.Length; i++)
             if (Math.Abs(a[i] - b[i]) > 1e-10) return false;
         return true;
+    }
+
+    /// <summary>
+    /// Correct flash results for single-phase / supercritical conditions.
+    /// Thermopack may return betaV/betaL outside [0,1] or phase==SINGLEPH.
+    /// In such cases, use GuessPhase to determine liquid/vapor and set
+    /// beta to 0 or 1, with X=Y=feed.
+    /// </summary>
+    private void NormalizeFlashResult(FlashResult result, double[] feed, int nc)
+    {
+        if (_engine == null) return;
+
+        double betaV = result.BetaV;
+        double betaL = result.BetaL;
+        if (double.IsNaN(betaV)) betaV = 0;
+        if (double.IsNaN(betaL)) betaL = 0;
+
+        bool phaseIsSingle = result.Phase == _engine.SinglePhase;
+        bool betaOutOfRange = betaV < -1e-6 || betaV > 1.0 + 1e-6 ||
+                              betaL < -1e-6 || betaL > 1.0 + 1e-6;
+        bool betaSumBad = Math.Abs(betaV + betaL - 1.0) > 0.01;
+
+        if (phaseIsSingle || betaOutOfRange || betaSumBad)
+        {
+            int guessedPhase;
+            try
+            {
+                guessedPhase = _engine.GuessPhase(result.Temperature, result.Pressure, feed);
+            }
+            catch
+            {
+                guessedPhase = (result.Phase == _engine.LiquidPhase)
+                    ? _engine.LiquidPhase : _engine.VaporPhase;
+            }
+
+            result.Phase = guessedPhase;
+            var feedCopy = FitArray(feed, nc);
+
+            if (guessedPhase == _engine.VaporPhase)
+            {
+                result.BetaV = 1.0;
+                result.BetaL = 0.0;
+                result.Y = feedCopy;
+                result.X = feedCopy;
+            }
+            else
+            {
+                result.BetaV = 0.0;
+                result.BetaL = 1.0;
+                result.X = feedCopy;
+                result.Y = feedCopy;
+            }
+        }
+        else
+        {
+            // Clamp two-phase betas to [0,1]
+            result.BetaV = Math.Max(0, Math.Min(1, betaV));
+            result.BetaL = Math.Max(0, Math.Min(1, betaL));
+        }
     }
 
     private static void SanitizeArray(double[] arr)
