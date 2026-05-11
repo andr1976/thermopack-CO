@@ -1,6 +1,6 @@
 using System;
 using System.Runtime.InteropServices;
-using CAPEOPEN110;
+using CAPEOPEN;
 
 namespace ThermoPack.CapeOpen;
 

@@ -3,7 +3,7 @@ using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.ComTypes;
-using CAPEOPEN110;
+using CAPEOPEN;
 using ThermoPack.Core;
 using ThermoPack.Core.Models;
 using ThermoPack.Editor;

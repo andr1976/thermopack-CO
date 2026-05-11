@@ -8,7 +8,7 @@ namespace ThermoPack.CapeOpen;
 // CAPE-OPEN 1.1 interfaces are provided by the CO-LaN Primary Interop
 // Assembly (CAPE-OPENv1-1-0.dll), referenced in the project file.
 //
-// Import with: using CAPEOPEN110;
+// Import with: using CAPEOPEN;
 //
 // This file contains category GUIDs for COM registration and
 // additional COM interface declarations not in the .NET BCL.

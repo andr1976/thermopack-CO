@@ -1,5 +1,5 @@
 using System;
-using CAPEOPEN110;
+using CAPEOPEN;
 
 namespace ThermoPack.CapeOpen;
 
