@@ -406,27 +406,77 @@ public abstract class ThermoPackPropertyPackageBase :
     {
         if (_material == null) throw new COMException("Material not set");
         EnsureFlashResult();
+        EnsureInitialized();
 
         var propNames = (string[])props;
         var phases = (string[])phaseLabels;
         var wrapper = new MaterialObjectWrapper(_material);
+        int nc = _selectedComponents.Count;
 
         foreach (var prop in propNames)
         {
-            if (prop.Equals("kvalue", StringComparison.OrdinalIgnoreCase))
+            string propLower = prop.ToLowerInvariant();
+
+            if (propLower == "kvalue")
             {
                 if (_lastResult != null && _lastResult.X.Length > 0 && _lastResult.Y.Length > 0)
                 {
-                    int nc = _selectedComponents.Count;
                     var kvalues = new double[nc];
                     for (int i = 0; i < nc; i++)
                     {
                         kvalues[i] = (_lastResult.X[i] > 1e-30)
                             ? _lastResult.Y[i] / _lastResult.X[i]
-                            : 1e10;
+                            : 0.0;
                     }
-                    // Write to first phase pair
-                    _material.SetTwoPhaseProp(prop, phases, "Mole", kvalues);
+                    _material.SetTwoPhaseProp(prop, phases, "", kvalues);
+                }
+            }
+            else if (propLower == "bubblepointpressure" || propLower == "dewpointpressure")
+            {
+                if (_engine != null && _lastResult != null)
+                {
+                    try
+                    {
+                        double T = _lastResult.Temperature;
+                        double[] feed = _lastFeed ?? new double[nc];
+                        double pVal;
+                        if (propLower == "bubblepointpressure")
+                        {
+                            var (pBub, _) = _engine.BubblePressure(T, feed);
+                            pVal = pBub;
+                        }
+                        else
+                        {
+                            var (pDew, _) = _engine.DewPressure(T, feed);
+                            pVal = pDew;
+                        }
+                        _material.SetTwoPhaseProp(prop, phases, "", new double[] { pVal });
+                    }
+                    catch { /* bubble/dew may fail for some systems */ }
+                }
+            }
+            else if (propLower == "bubblepointtemperature" || propLower == "dewpointtemperature")
+            {
+                if (_engine != null && _lastResult != null)
+                {
+                    try
+                    {
+                        double P = _lastResult.Pressure;
+                        double[] feed = _lastFeed ?? new double[nc];
+                        double tVal;
+                        if (propLower == "bubblepointtemperature")
+                        {
+                            var (tBub, _) = _engine.BubbleTemperature(P, feed);
+                            tVal = tBub;
+                        }
+                        else
+                        {
+                            var (tDew, _) = _engine.DewTemperature(P, feed);
+                            tVal = tDew;
+                        }
+                        _material.SetTwoPhaseProp(prop, phases, "", new double[] { tVal });
+                    }
+                    catch { /* bubble/dew may fail for some systems */ }
                 }
             }
         }
@@ -468,7 +518,9 @@ public abstract class ThermoPackPropertyPackageBase :
 
     public bool CheckTwoPhasePropSpec(string property, object phaseLabels)
     {
-        return property.Equals("kvalue", StringComparison.OrdinalIgnoreCase);
+        var supported = new[] { "kvalue", "bubblepointpressure", "dewpointpressure",
+            "bubblepointtemperature", "dewpointtemperature" };
+        return Array.Exists(supported, p => p.Equals(property, StringComparison.OrdinalIgnoreCase));
     }
 
     public object GetSinglePhasePropList()
@@ -484,7 +536,8 @@ public abstract class ThermoPackPropertyPackageBase :
 
     public object GetTwoPhasePropList()
     {
-        return new[] { "kvalue" };
+        return new[] { "kvalue", "bubblePointPressure", "dewPointPressure",
+            "bubblePointTemperature", "dewPointTemperature" };
     }
 
     // ─── ICapeThermoUniversalConstant ─────────────────────────────────
@@ -903,8 +956,14 @@ public abstract class ThermoPackPropertyPackageBase :
             case "fraction":
                 return x;
 
+            case "temperature":
+                return new[] { T };
+
+            case "pressure":
+                return new[] { P };
+
             default:
-                throw new COMException($"Unsupported property: {prop}");
+                throw new COMException($"Unsupported single-phase property: {prop}");
         }
     }
 
@@ -943,9 +1002,49 @@ public abstract class ThermoPackPropertyPackageBase :
         double T = result.Temperature;
         double P = result.Pressure;
 
-        // Write overall T and P
+        // Write overall T, P, and feed fraction
         try { wrapper.SetOverallProp("temperature", "", new[] { T }); } catch { }
         try { wrapper.SetOverallProp("pressure", "", new[] { P }); } catch { }
+        try { wrapper.SetOverallProp("fraction", "Mole", feed); } catch { }
+
+        // Compute and write overall H, S, V (mixture properties)
+        if (_engine != null)
+        {
+            try
+            {
+                double hMix = 0, sMix = 0, vMix = 0;
+                double betaV = result.BetaV;
+                double betaL = result.BetaL;
+                if (double.IsNaN(betaV)) betaV = 0;
+                if (double.IsNaN(betaL)) betaL = 0;
+
+                double[] xLiq = FitArray(result.X, nc);
+                double[] yVap = FitArray(result.Y, nc);
+                SanitizeArray(xLiq);
+                SanitizeArray(yVap);
+
+                if (betaV > 1e-12)
+                {
+                    hMix += betaV * _engine.Enthalpy(T, P, yVap, _engine.VaporPhase);
+                    sMix += betaV * _engine.Entropy(T, P, yVap, _engine.VaporPhase);
+                    vMix += betaV * _engine.SpecificVolume(T, P, yVap, _engine.VaporPhase);
+                }
+                if (betaL > 1e-12)
+                {
+                    hMix += betaL * _engine.Enthalpy(T, P, xLiq, _engine.LiquidPhase);
+                    sMix += betaL * _engine.Entropy(T, P, xLiq, _engine.LiquidPhase);
+                    vMix += betaL * _engine.SpecificVolume(T, P, xLiq, _engine.LiquidPhase);
+                }
+
+                if (!double.IsNaN(hMix) && !double.IsInfinity(hMix))
+                    wrapper.SetOverallProp("enthalpy", "Mole", new[] { hMix });
+                if (!double.IsNaN(sMix) && !double.IsInfinity(sMix))
+                    wrapper.SetOverallProp("entropy", "Mole", new[] { sMix });
+                if (!double.IsNaN(vMix) && !double.IsInfinity(vMix))
+                    wrapper.SetOverallProp("volume", "Mole", new[] { vMix });
+            }
+            catch { /* non-fatal: overall properties are convenience values */ }
+        }
 
         // Determine present phases
         var labels = new List<string>();
