@@ -5,6 +5,7 @@ using System.ComponentModel;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using ThermoPack.Core.Models;
+using Component = ThermoPack.Core.Models.Component;
 
 namespace ThermoPack.Editor.ViewModels;
 
