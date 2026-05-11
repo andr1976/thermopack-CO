@@ -31,6 +31,11 @@ public abstract class ThermoPackPropertyPackageBase :
     private const int StreamVersion = 1;
     private const int CapeAtEquilibrium = 1; // eCapeAtEquilibrium
 
+    // CAPE-OPEN HRESULT codes
+    private const int ECapeUnknown = unchecked((int)0x80040501);
+    private const int ECapeNoImpl = unchecked((int)0x80040507);
+    private const int ECapeCalculation = unchecked((int)0x8004050C);
+
     // Phase labels
     private const string PhaseVapour = "Vapour";
     private const string PhaseLiquid = "Liquid";
@@ -277,12 +282,29 @@ public abstract class ThermoPackPropertyPackageBase :
     {
         if (_material == null) return;
         if (_selectedComponents.Count == 0)
-            throw new COMException("No compounds configured. Use Edit() to select compounds first.");
+            throw new COMException("No compounds configured. Use Edit() to select compounds first.",
+                ECapeCalculation);
 
+        try
+        {
+            CalcEquilibriumCore(specification1, specification2);
+        }
+        catch (COMException)
+        {
+            throw; // Already a proper COM exception
+        }
+        catch (Exception ex)
+        {
+            throw new COMException($"CalcEquilibrium failed: {ex.Message}", ECapeCalculation);
+        }
+    }
+
+    private void CalcEquilibriumCore(object specification1, object specification2)
+    {
         EnsureInitialized();
 
         var spec = ValidateFlashSpec(specification1, specification2);
-        var wrapper = new MaterialObjectWrapper(_material);
+        var wrapper = new MaterialObjectWrapper(_material!);
         int nc = _selectedComponents.Count;
         double[] rawFeed = wrapper.GetFeed(nc);
 
@@ -323,6 +345,7 @@ public abstract class ThermoPackPropertyPackageBase :
         if ((spec.Type == FlashType.PH || spec.Type == FlashType.PS) && double.IsNaN(targetValue))
         {
             var bootResult = _engine!.TwoPhaseTPFlash(T, P, feed);
+            NormalizeFlashResult(bootResult, feed, nc);
             double bT = bootResult.Temperature;
             double bP = bootResult.Pressure;
 
@@ -377,7 +400,7 @@ public abstract class ThermoPackPropertyPackageBase :
                 result = _engine!.TVFFlash(T, feed, targetValue);
                 break;
             default:
-                throw new COMException($"Unsupported flash type: {spec.Type}");
+                throw new COMException($"Unsupported flash type: {spec.Type}", ECapeUnknown);
         }
 
         // Normalize single-phase results before caching
@@ -403,24 +426,38 @@ public abstract class ThermoPackPropertyPackageBase :
 
     public void CalcSinglePhaseProp(object props, string phaseLabel)
     {
-        if (_material == null) throw new COMException("Material not set");
-        if (_selectedComponents.Count == 0) throw new COMException("No compounds configured.");
-        EnsureFlashResult();
+        if (_material == null) throw new COMException("Material not set", ECapeUnknown);
+        if (_selectedComponents.Count == 0) throw new COMException("No compounds configured.", ECapeUnknown);
 
-        var propNames = (string[])props;
-        var wrapper = new MaterialObjectWrapper(_material);
-
-        foreach (var prop in propNames)
+        try
         {
-            double[] values = GetSinglePhasePropertyValues(prop, phaseLabel, wrapper);
-            string basis = GetPropertyBasis(prop);
-            wrapper.SetSinglePhaseProp(prop, phaseLabel, basis, values);
+            EnsureFlashResult();
+
+            var propNames = (string[])props;
+            var wrapper = new MaterialObjectWrapper(_material);
+
+            foreach (var prop in propNames)
+            {
+                double[] values = GetSinglePhasePropertyValues(prop, phaseLabel, wrapper);
+                string basis = GetPropertyBasis(prop);
+                wrapper.SetSinglePhaseProp(prop, phaseLabel, basis, values);
+            }
+        }
+        catch (COMException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            throw new COMException(
+                $"CalcSinglePhaseProp failed for phase {phaseLabel}: {ex.Message}",
+                ECapeCalculation);
         }
     }
 
     public void CalcTwoPhaseProp(object props, object phaseLabels)
     {
-        if (_material == null) throw new COMException("Material not set");
+        if (_material == null) throw new COMException("Material not set", ECapeUnknown);
         EnsureFlashResult();
         EnsureInitialized();
 
@@ -1006,6 +1043,8 @@ public abstract class ThermoPackPropertyPackageBase :
 
     private static string GetPropertyBasis(string prop)
     {
+        // Basis alignment with thermocalc: Mole for thermodynamic properties,
+        // empty string for everything else (fugacity, coefficients, MW, etc.)
         switch (prop.ToLowerInvariant())
         {
             case "enthalpy":
@@ -1019,17 +1058,11 @@ public abstract class ThermoPackPropertyPackageBase :
             case "heatcapacitycp":
             case "volume":
             case "density":
-            case "fugacity":
-                return "Mole";
-            case "fugacitycoefficient":
-            case "logfugacitycoefficient":
-            case "compressibilityfactor":
-            case "molecularweight":
             case "fraction":
             case "phasefraction":
-                return "";
-            default:
                 return "Mole";
+            default:
+                return "";
         }
     }
 
