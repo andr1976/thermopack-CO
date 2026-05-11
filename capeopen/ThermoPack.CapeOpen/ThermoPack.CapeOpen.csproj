@@ -50,7 +50,22 @@
     </Otherwise>
   </Choose>
 
-  <!-- Native library is copied transitively from ThermoPack.Core -->
-  <!-- Fluids directory is also copied transitively -->
+  <!-- Native library is copied transitively from ThermoPack.Core via CopyToOutputDirectory -->
+
+  <!-- Copy fluids JSON files to output (MSBuild custom targets do NOT cascade transitively).
+       Project is at capeopen/ThermoPack.CapeOpen/, fluids is at repo root. -->
+  <PropertyGroup>
+    <ThermoPackFluidsDir>$([MSBuild]::NormalizePath($(MSBuildProjectDirectory), '..', '..', 'fluids'))</ThermoPackFluidsDir>
+  </PropertyGroup>
+  <Target Name="CopyFluids" AfterTargets="Build"
+          Condition="Exists('$(ThermoPackFluidsDir)')">
+    <ItemGroup>
+      <_FluidsJsonFiles Include="$(ThermoPackFluidsDir)/**/*.json" />
+    </ItemGroup>
+    <Message Importance="high" Text="Copying $(_FluidsJsonFiles->Count()) fluids JSON files from $(ThermoPackFluidsDir) to $(OutputPath)fluids" />
+    <Copy SourceFiles="@(_FluidsJsonFiles)"
+          DestinationFolder="$(OutputPath)fluids"
+          SkipUnchangedFiles="true" />
+  </Target>
 
 </Project>

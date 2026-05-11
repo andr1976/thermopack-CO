@@ -47,12 +47,15 @@ public abstract class ThermoPackPropertyPackageBase :
     private static readonly object _staticLock = new();
     private static string? _fluidsDir;
 
+    // Shared component selection: COFE creates multiple instances (master + solving).
+    // The master gets Edit()/Load() calls; solving instances must inherit the selection.
+    private static List<string>? _sharedSelectedCas;
+
     // ─── Instance state ───────────────────────────────────────────────
 
     private ThermoPackEngine? _engine;
     private ICapeThermoMaterial? _material;
     private List<Component> _selectedComponents = new();
-    private bool _loadedFromStream;
     private bool _isDirty;
 
     // COM object references (must be released via Marshal.ReleaseComObject)
@@ -630,6 +633,14 @@ public abstract class ThermoPackPropertyPackageBase :
     {
         AssemblyResolver.Initialize();
         EnsureStaticInit();
+
+        // If this is a solving instance (no components loaded yet), inherit from shared state
+        if (_selectedComponents.Count == 0 && _sharedSelectedCas != null && _sharedSelectedCas.Count > 0)
+        {
+            _selectedComponents = ResolveSharedComponents(_sharedSelectedCas);
+            if (_selectedComponents.Count > 0)
+                RecreateEngine();
+        }
     }
 
     public int Edit()
@@ -645,6 +656,7 @@ public abstract class ThermoPackPropertyPackageBase :
             if (editorResult != null)
             {
                 _selectedComponents = new List<Component>(editorResult);
+                SyncShared();
                 _isDirty = true;
                 _lastResult = null;
                 RecreateEngine();
@@ -672,7 +684,39 @@ public abstract class ThermoPackPropertyPackageBase :
 
     public object parameters
     {
-        get => null!;
+        get
+        {
+            // Serialize EOS type + CAS list as string for COFE instance transfer
+            var casString = string.Join(";", _selectedComponents.Select(c => c.CasNumber));
+            return $"{(int)EosType};{casString}";
+        }
+        set
+        {
+            if (value is string s && !string.IsNullOrWhiteSpace(s))
+            {
+                var tokens = s.Split(';');
+                if (tokens.Length >= 2)
+                {
+                    EnsureStaticInit();
+                    // First token is EOS type (ignored, we use our own)
+                    var restored = new List<Component>();
+                    for (int i = 1; i < tokens.Length; i++)
+                    {
+                        string cas = tokens[i].Trim();
+                        if (cas.Length == 0) continue;
+                        var comp = _sharedDb?.FindByCas(cas);
+                        if (comp != null) restored.Add(comp);
+                    }
+                    if (restored.Count > 0)
+                    {
+                        _selectedComponents = restored;
+                        SyncShared();
+                        _lastResult = null;
+                        RecreateEngine();
+                    }
+                }
+            }
+        }
     }
 
     // ─── IPersistStreamInit ───────────────────────────────────────────
@@ -709,7 +753,7 @@ public abstract class ThermoPackPropertyPackageBase :
             }
 
             _selectedComponents = compList;
-            _loadedFromStream = true;
+            SyncShared();
             _isDirty = false;
 
             RecreateEngine();
@@ -744,7 +788,6 @@ public abstract class ThermoPackPropertyPackageBase :
     public void InitNew()
     {
         _selectedComponents = new List<Component>();
-        _loadedFromStream = false;
         _isDirty = false;
     }
 
@@ -822,21 +865,44 @@ public abstract class ThermoPackPropertyPackageBase :
 
     private static string? FindFluidsDirectory(string startDir)
     {
-        // Check alongside assembly
-        var local = Path.Combine(startDir, "fluids");
-        if (Directory.Exists(local)) return local;
+        // Try multiple starting points
+        var searchDirs = new List<string> { startDir };
 
-        // Walk up to find thermopack root
-        var dir = startDir;
-        for (int i = 0; i < 6; i++)
+        // Also try CodeBase location (may differ from Location for COM activation)
+        try
         {
-            var parent = Path.GetDirectoryName(dir);
-            if (parent == null) break;
-            dir = parent;
-            var candidate = Path.Combine(dir, "fluids");
-            if (Directory.Exists(candidate) &&
-                File.Exists(Path.Combine(candidate, "Methane.json")))
-                return candidate;
+            var asm = Assembly.GetExecutingAssembly();
+            string? codeBase = asm.CodeBase;
+            if (!string.IsNullOrEmpty(codeBase))
+            {
+                var uri = new Uri(codeBase);
+                var cbDir = Path.GetDirectoryName(uri.LocalPath);
+                if (cbDir != null && cbDir != startDir)
+                    searchDirs.Add(cbDir);
+            }
+        }
+        catch { }
+
+        foreach (var searchDir in searchDirs)
+        {
+            // Check alongside assembly
+            var local = Path.Combine(searchDir, "fluids");
+            if (Directory.Exists(local) &&
+                File.Exists(Path.Combine(local, "Methane.json")))
+                return local;
+
+            // Walk up to find thermopack root
+            var dir = searchDir;
+            for (int i = 0; i < 8; i++)
+            {
+                var parent = Path.GetDirectoryName(dir);
+                if (parent == null) break;
+                dir = parent;
+                var candidate = Path.Combine(dir, "fluids");
+                if (Directory.Exists(candidate) &&
+                    File.Exists(Path.Combine(candidate, "Methane.json")))
+                    return candidate;
+            }
         }
 
         return null;
@@ -1247,6 +1313,31 @@ public abstract class ThermoPackPropertyPackageBase :
     }
 
     // ─── Utility methods ──────────────────────────────────────────────
+
+    /// <summary>
+    /// Store the current component selection in shared static state so that
+    /// new COFE solving instances (created after the master) can inherit it.
+    /// </summary>
+    private void SyncShared()
+    {
+        _sharedSelectedCas = _selectedComponents.Select(c => c.CasNumber).ToList();
+    }
+
+    /// <summary>
+    /// Resolve a list of CAS numbers back to Component objects from the database.
+    /// Preserves the order from the shared list (important for feed index mapping).
+    /// </summary>
+    private static List<Component> ResolveSharedComponents(List<string> casList)
+    {
+        if (_sharedDb == null) return new List<Component>();
+        var result = new List<Component>();
+        foreach (var cas in casList)
+        {
+            var comp = _sharedDb.FindByCas(cas);
+            if (comp != null) result.Add(comp);
+        }
+        return result;
+    }
 
     private Component? FindComponentByCas(string cas)
         => _selectedComponents.FirstOrDefault(c => c.CasNumber == cas);
