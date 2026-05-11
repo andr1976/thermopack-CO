@@ -1,0 +1,62 @@
+{
+  "format": 1,
+  "restore": {
+    "/home/anra/github/thermopack-CO/capeopen/ThermoPack.Core/ThermoPack.Core.csproj": {}
+  },
+  "projects": {
+    "/home/anra/github/thermopack-CO/capeopen/ThermoPack.Core/ThermoPack.Core.csproj": {
+      "version": "1.0.0",
+      "restore": {
+        "projectUniqueName": "/home/anra/github/thermopack-CO/capeopen/ThermoPack.Core/ThermoPack.Core.csproj",
+        "projectName": "ThermoPack.Core",
+        "projectPath": "/home/anra/github/thermopack-CO/capeopen/ThermoPack.Core/ThermoPack.Core.csproj",
+        "packagesPath": "/home/anra/.nuget/packages/",
+        "outputPath": "/home/anra/github/thermopack-CO/capeopen/ThermoPack.Core/obj/",
+        "projectStyle": "PackageReference",
+        "configFilePaths": [
+          "/home/anra/.nuget/NuGet/NuGet.Config"
+        ],
+        "originalTargetFrameworks": [
+          "net48"
+        ],
+        "sources": {
+          "https://api.nuget.org/v3/index.json": {}
+        },
+        "frameworks": {
+          "net48": {
+            "targetAlias": "net48",
+            "projectReferences": {}
+          }
+        },
+        "warningProperties": {
+          "warnAsError": [
+            "NU1605"
+          ]
+        },
+        "restoreAuditProperties": {
+          "enableAudit": "true",
+          "auditLevel": "low",
+          "auditMode": "direct"
+        }
+      },
+      "frameworks": {
+        "net48": {
+          "targetAlias": "net48",
+          "dependencies": {
+            "Microsoft.NETFramework.ReferenceAssemblies": {
+              "suppressParent": "All",
+              "target": "Package",
+              "version": "[1.0.3, )",
+              "autoReferenced": true
+            },
+            "System.Text.Json": {
+              "target": "Package",
+              "version": "[8.0.5, )"
+            }
+          },
+          "runtimeIdentifierGraphPath": "/snap/dotnet-sdk/256/sdk/8.0.407/RuntimeIdentifierGraph.json"
+        }
+      }
+    }
+  }
+}

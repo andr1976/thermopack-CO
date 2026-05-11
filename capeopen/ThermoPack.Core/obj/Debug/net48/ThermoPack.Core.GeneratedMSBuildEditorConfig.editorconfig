@@ -1,0 +1,5 @@
+is_global = true
+build_property.RootNamespace = ThermoPack.Core
+build_property.ProjectDir = /home/anra/github/thermopack-CO/capeopen/ThermoPack.Core/
+build_property.EnableComHosting = 
+build_property.EnableGeneratedComInterfaceComImportInterop = 

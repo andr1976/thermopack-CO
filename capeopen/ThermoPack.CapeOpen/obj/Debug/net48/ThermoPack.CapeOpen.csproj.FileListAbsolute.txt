@@ -1,0 +1,7 @@
+/home/anra/github/thermopack-CO/capeopen/ThermoPack.CapeOpen/obj/Debug/net48/ThermoPack.CapeOpen.csproj.AssemblyReference.cache
+/home/anra/github/thermopack-CO/capeopen/ThermoPack.CapeOpen/obj/Debug/net48/Avalonia/Resources.Inputs.cache
+/home/anra/github/thermopack-CO/capeopen/ThermoPack.CapeOpen/obj/Debug/net48/ThermoPack.CapeOpen.GeneratedMSBuildEditorConfig.editorconfig
+/home/anra/github/thermopack-CO/capeopen/ThermoPack.CapeOpen/obj/Debug/net48/ThermoPack.CapeOpen.AssemblyInfoInputs.cache
+/home/anra/github/thermopack-CO/capeopen/ThermoPack.CapeOpen/obj/Debug/net48/ThermoPack.CapeOpen.AssemblyInfo.cs
+/home/anra/github/thermopack-CO/capeopen/ThermoPack.CapeOpen/obj/Debug/net48/ThermoPack.CapeOpen.csproj.CoreCompileInputs.cache
+/home/anra/github/thermopack-CO/capeopen/ThermoPack.CapeOpen/obj/Debug/net48/ThermoPack.CapeOpen.sourcelink.json
