@@ -15,7 +15,7 @@
 
   <!-- Include Core source files directly (Core targets net48, we target net8.0) -->
   <ItemGroup>
-    <Compile Include="..\ThermoPack.Core\**\*.cs" LinkBase="Core" />
+    <Compile Include="..\ThermoPack.Core\**\*.cs" Exclude="..\ThermoPack.Core\obj\**" LinkBase="Core" />
   </ItemGroup>
 
 </Project>
