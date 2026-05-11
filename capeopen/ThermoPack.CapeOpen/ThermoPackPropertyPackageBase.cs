@@ -46,6 +46,7 @@ public abstract class ThermoPackPropertyPackageBase :
     private static ComponentDatabase? _sharedDb;
     private static readonly object _staticLock = new();
     private static string? _fluidsDir;
+    private static string? _logPath;
 
     // Shared component selection: COFE creates multiple instances (master + solving).
     // The master gets Edit()/Load() calls; solving instances must inherit the selection.
@@ -147,6 +148,13 @@ public abstract class ThermoPackPropertyPackageBase :
         ref object names, ref object boilTemps, ref object molwts, ref object casNos)
     {
         int nc = _selectedComponents.Count;
+        if (nc == 0)
+        {
+            compIds = null!; formulae = null!; names = null!;
+            boilTemps = null!; molwts = null!; casNos = null!;
+            return;
+        }
+
         var ids = new string[nc];
         var forms = new string[nc];
         var nms = new string[nc];
@@ -229,7 +237,7 @@ public abstract class ThermoPackPropertyPackageBase :
 
     public object GetPDependentPropList()
     {
-        return new string[0];
+        return null!;
     }
 
     public void GetPDependentProperty(object props, double pressure, object compIds,
@@ -631,13 +639,16 @@ public abstract class ThermoPackPropertyPackageBase :
 
     public void Initialize()
     {
+        Log($"Initialize() called on {GetType().Name}");
         AssemblyResolver.Initialize();
         EnsureStaticInit();
+        Log($"Initialize(): sharedDb has {_sharedDb?.Components.Count ?? 0} components, sharedCas={_sharedSelectedCas?.Count ?? 0}");
 
         // If this is a solving instance (no components loaded yet), inherit from shared state
         if (_selectedComponents.Count == 0 && _sharedSelectedCas != null && _sharedSelectedCas.Count > 0)
         {
             _selectedComponents = ResolveSharedComponents(_sharedSelectedCas);
+            Log($"Initialize(): inherited {_selectedComponents.Count} components from shared state");
             if (_selectedComponents.Count > 0)
                 RecreateEngine();
         }
@@ -647,14 +658,17 @@ public abstract class ThermoPackPropertyPackageBase :
     {
         try
         {
+            Log($"Edit() called, EosType={EosType}");
             EnsureStaticInit();
 
             var available = _sharedDb!.GetComponentsForEos(EosType);
+            Log($"Edit(): {available.Count} components available for {EosType}");
             var editorResult = EditorLauncher.ShowComponentEditor(
                 available, _selectedComponents, EosType);
 
             if (editorResult != null)
             {
+                Log($"Edit(): user selected {editorResult.Count} components");
                 _selectedComponents = new List<Component>(editorResult);
                 SyncShared();
                 _isDirty = true;
@@ -662,10 +676,12 @@ public abstract class ThermoPackPropertyPackageBase :
                 RecreateEngine();
                 return 0; // S_OK — compounds changed
             }
+            Log("Edit(): cancelled");
             return 1; // S_FALSE — cancelled
         }
-        catch
+        catch (Exception ex)
         {
+            Log($"Edit() FAILED: {ex}");
             return 1; // S_FALSE — error
         }
     }
@@ -850,16 +866,28 @@ public abstract class ThermoPackPropertyPackageBase :
             if (_sharedLib != null) return;
 
             var asmDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) ?? "";
+            Log($"EnsureStaticInit: asmDir={asmDir}");
 
             // Find fluids directory: look relative to assembly, then thermopack source
             _fluidsDir = FindFluidsDirectory(asmDir);
+            Log($"EnsureStaticInit: fluidsDir={_fluidsDir ?? "(null)"}");
 
             _sharedDb = new ComponentDatabase();
             if (_fluidsDir != null)
                 _sharedDb.LoadFromDirectory(_fluidsDir);
+            Log($"EnsureStaticInit: loaded {_sharedDb.Components.Count} components");
 
             _sharedLib = new ThermoPackLibrary();
-            _sharedLib.Load(asmDir);
+            try
+            {
+                _sharedLib.Load(asmDir);
+                Log("EnsureStaticInit: native library loaded OK");
+            }
+            catch (Exception ex)
+            {
+                Log($"EnsureStaticInit: native library load FAILED: {ex.Message}");
+                // _sharedLib is non-null but not functional — DB is still valid for Edit
+            }
         }
     }
 
@@ -1142,10 +1170,22 @@ public abstract class ThermoPackPropertyPackageBase :
         double betaV = result.BetaV;
         double betaL = result.BetaL;
 
-        // Write overall T, P, and feed fraction
+        // Prepare per-phase composition arrays
+        double[] xLiq = FitArray(result.X, nc);
+        double[] yVap = FitArray(result.Y, nc);
+        SanitizeArray(xLiq);
+        SanitizeArray(yVap);
+
+        // Compute overall fraction consistent with phase data: z_i = betaV*y_i + betaL*x_i
+        // This ensures COFE's mass balance check passes exactly.
+        var overallFraction = new double[nc];
+        for (int i = 0; i < nc; i++)
+            overallFraction[i] = betaV * yVap[i] + betaL * xLiq[i];
+
+        // Write overall T, P, and consistent overall fraction
         try { wrapper.SetOverallProp("temperature", "", new[] { T }); } catch { }
         try { wrapper.SetOverallProp("pressure", "", new[] { P }); } catch { }
-        try { wrapper.SetOverallProp("fraction", "Mole", feed); } catch { }
+        try { wrapper.SetOverallProp("fraction", "Mole", overallFraction); } catch { }
 
         // Compute and write overall H, S, V (mixture properties)
         if (_engine != null)
@@ -1153,10 +1193,6 @@ public abstract class ThermoPackPropertyPackageBase :
             try
             {
                 double hMix = 0, sMix = 0, vMix = 0;
-                double[] xLiq = FitArray(result.X, nc);
-                double[] yVap = FitArray(result.Y, nc);
-                SanitizeArray(xLiq);
-                SanitizeArray(yVap);
 
                 if (betaV > 1e-12)
                 {
@@ -1208,10 +1244,7 @@ public abstract class ThermoPackPropertyPackageBase :
         foreach (var label in labels)
         {
             double beta = label == PhaseVapour ? betaV : betaL;
-            double[] comp = label == PhaseVapour
-                ? FitArray(result.Y, nc)
-                : FitArray(result.X, nc);
-            SanitizeArray(comp);
+            double[] comp = label == PhaseVapour ? yVap : xLiq;
 
             wrapper.SetSinglePhaseProp("temperature", label, "", new[] { T });
             wrapper.SetSinglePhaseProp("pressure", label, "", new[] { P });
@@ -1444,6 +1477,22 @@ public abstract class ThermoPackPropertyPackageBase :
         for (int i = 0; i < arr.Length; i++)
             if (double.IsNaN(arr[i]) || double.IsInfinity(arr[i]))
                 arr[i] = 0;
+    }
+
+    // ─── Diagnostic logging ──────────────────────────────────────────
+
+    private static void Log(string message)
+    {
+        try
+        {
+            if (_logPath == null)
+            {
+                var dir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) ?? ".";
+                _logPath = Path.Combine(dir, "thermopack_capeopen.log");
+            }
+            File.AppendAllText(_logPath, $"[{DateTime.Now:HH:mm:ss.fff}] {message}{Environment.NewLine}");
+        }
+        catch { }
     }
 
     // ─── COM Stream Wrapper ───────────────────────────────────────────

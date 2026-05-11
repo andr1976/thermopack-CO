@@ -60,9 +60,9 @@
   <Target Name="CopyFluids" AfterTargets="Build"
           Condition="Exists('$(ThermoPackFluidsDir)')">
     <ItemGroup>
-      <_FluidsJsonFiles Include="$(ThermoPackFluidsDir)/**/*.json" />
+      <_FluidsJsonFiles Include="$(ThermoPackFluidsDir)\*.json" />
     </ItemGroup>
-    <Message Importance="high" Text="Copying $(_FluidsJsonFiles->Count()) fluids JSON files from $(ThermoPackFluidsDir) to $(OutputPath)fluids" />
+    <Message Importance="high" Text="Copying fluids JSON files from $(ThermoPackFluidsDir) to $(OutputPath)fluids" />
     <Copy SourceFiles="@(_FluidsJsonFiles)"
           DestinationFolder="$(OutputPath)fluids"
           SkipUnchangedFiles="true" />
