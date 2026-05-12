@@ -1266,22 +1266,25 @@ public abstract class ThermoPackPropertyPackageBase :
             catch (Exception ex) { Log($"WriteFlash: overall volume FAILED: {ex.Message}"); }
         }
 
-        // Always report both phases so unit operations (compressor, etc.) can
-        // read properties for either phase.  For single-phase results the absent
-        // phase gets beta=0 and the same composition as the present phase.
-        var labels = new[] { PhaseVapour, PhaseLiquid };
-        var statuses = new[] { CapeAtEquilibrium, CapeAtEquilibrium };
-        wrapper.SetPresentPhases(labels, statuses);
+        // Only report phases that are actually present.  Reporting an absent
+        // phase (beta=0) makes COFE think the stream is at the phase boundary.
+        var labelList = new List<string>();
+        var statusList = new List<int>();
+        if (betaV > 1e-12) { labelList.Add(PhaseVapour); statusList.Add(CapeAtEquilibrium); }
+        if (betaL > 1e-12) { labelList.Add(PhaseLiquid); statusList.Add(CapeAtEquilibrium); }
+        // Safety: if neither phase has significant fraction, report the dominant one
+        if (labelList.Count == 0)
+        {
+            labelList.Add(betaV >= betaL ? PhaseVapour : PhaseLiquid);
+            statusList.Add(CapeAtEquilibrium);
+        }
+        wrapper.SetPresentPhases(labelList.ToArray(), statusList.ToArray());
 
-        foreach (var label in labels)
+        foreach (var label in labelList)
         {
             bool isVapour = label == PhaseVapour;
             double beta = isVapour ? betaV : betaL;
-            // For the absent phase (beta≈0) use the dominant phase's composition
-            // so that property evaluations still succeed.
-            double[] comp = beta > 1e-12
-                ? (isVapour ? yVap : xLiq)
-                : (betaV > betaL ? yVap : xLiq);
+            double[] comp = isVapour ? yVap : xLiq;
             int phase = isVapour ? _engine!.VaporPhase : _engine!.LiquidPhase;
             int altPhase = isVapour ? _engine!.LiquidPhase : _engine!.VaporPhase;
 
@@ -1292,7 +1295,7 @@ public abstract class ThermoPackPropertyPackageBase :
 
             // Pre-compute per-phase H, S, V.  Try requested phase flag first;
             // if that returns NaN (supercritical, only one EOS root), use the
-            // alternative phase flag.  No silent swallowing — let it throw.
+            // alternative phase flag.
             double h = SafeCalc(() => _engine.Enthalpy(T, P, comp, phase),
                                 () => _engine.Enthalpy(T, P, comp, altPhase));
             wrapper.SetSinglePhaseProp("enthalpy", label, "Mole", new[] { h });
