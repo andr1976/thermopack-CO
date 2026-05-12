@@ -94,7 +94,7 @@ public class ThermoPackEngine : IDisposable
     // ─── Initialization methods ───────────────────────────────────────
 
     public void InitCubic(string comps, string eos, string mixing = "vdW",
-        string alpha = "Classic", string paramRef = "", bool volShift = false)
+        string alpha = "Classic", string paramRef = "Default", bool volShift = false)
     {
         lock (_lock)
         {
@@ -114,7 +114,7 @@ public class ThermoPackEngine : IDisposable
         }
     }
 
-    public void InitTcPR(string comps, string mixing = "vdW", string paramRef = "")
+    public void InitTcPR(string comps, string mixing = "vdW", string paramRef = "Default")
     {
         lock (_lock)
         {
@@ -131,7 +131,7 @@ public class ThermoPackEngine : IDisposable
     }
 
     public void InitCpa(string comps, string eos = "SRK", string mixing = "vdW",
-        string alpha = "Classic", string paramRef = "")
+        string alpha = "Classic", string paramRef = "Default")
     {
         lock (_lock)
         {
@@ -150,7 +150,7 @@ public class ThermoPackEngine : IDisposable
         }
     }
 
-    public void InitPcSaft(string comps, string paramRef = "",
+    public void InitPcSaft(string comps, string paramRef = "Default",
         bool simplified = false, bool polar = false)
     {
         lock (_lock)
