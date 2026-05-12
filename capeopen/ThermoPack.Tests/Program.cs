@@ -263,6 +263,73 @@ class Program
         }
 
         engine.Dispose();
+
+        // ─── CPA init tests ─────────────────────────────────────────
+        Console.WriteLine();
+        Console.WriteLine("--- CPA Init Tests ---");
+
+        // CPA with associating components (should work)
+        ThermoPackEngine cpaEngine;
+        try
+        {
+            cpaEngine = new ThermoPackEngine(lib);
+            cpaEngine.InitCpa("H2O,MEOH", "SRK");
+            Assert("InitCpa(H2O,MEOH)", cpaEngine.ComponentCount == 2,
+                $"nc={cpaEngine.ComponentCount}");
+
+            // TP flash
+            var cpaFlash = cpaEngine.TwoPhaseTPFlash(350.0, 1e5, new[] { 0.5, 0.5 });
+            Console.WriteLine($"  CPA Flash: T=350, P=1e5, betaV={cpaFlash.BetaV:F4}");
+            Assert("CPA.TPFlash", cpaFlash.BetaV > 0.01 && cpaFlash.BetaV < 0.99,
+                $"betaV={cpaFlash.BetaV}");
+
+            // Properties
+            double hCpa = cpaEngine.Enthalpy(350.0, 1e5, new[] { 0.5, 0.5 }, cpaEngine.VaporPhase);
+            Assert("CPA.Enthalpy", !double.IsNaN(hCpa), $"h={hCpa:F1}");
+
+            cpaEngine.Dispose();
+        }
+        catch (Exception ex)
+        {
+            Fail("InitCpa(H2O,MEOH)", ex.Message);
+        }
+
+        // CPA with mixed: one associating + one non-associating (should work)
+        try
+        {
+            cpaEngine = new ThermoPackEngine(lib);
+            cpaEngine.InitCpa("H2O,C1", "SRK");
+            Assert("InitCpa(H2O,C1)", cpaEngine.ComponentCount == 2,
+                $"nc={cpaEngine.ComponentCount}");
+
+            var cpaFlash2 = cpaEngine.TwoPhaseTPFlash(350.0, 1e5, new[] { 0.5, 0.5 });
+            Console.WriteLine($"  CPA H2O+C1: betaV={cpaFlash2.BetaV:F4}");
+            Assert("CPA.H2O+C1.Flash", !double.IsNaN(cpaFlash2.BetaV),
+                $"betaV={cpaFlash2.BetaV}");
+
+            cpaEngine.Dispose();
+        }
+        catch (Exception ex)
+        {
+            Fail("InitCpa(H2O,C1)", ex.Message);
+        }
+
+        // CPA with only non-associating (should fail gracefully, NOT crash)
+        try
+        {
+            cpaEngine = new ThermoPackEngine(lib);
+            cpaEngine.InitCpa("C1,C2", "SRK");
+            // If we get here, Fortran didn't crash - check if it worked or silently fell back
+            Console.WriteLine($"  WARNING: InitCpa(C1,C2) did not throw, nc={cpaEngine.ComponentCount}");
+            Fail("InitCpa(C1,C2)", "Expected error for non-associating components, but init succeeded");
+            cpaEngine.Dispose();
+        }
+        catch (Exception ex)
+        {
+            // This is the expected path - should get a clear error, not a crash
+            Pass("InitCpa(C1,C2) rejected", ex.Message);
+        }
+
         lib.Dispose();
         Console.WriteLine();
     }

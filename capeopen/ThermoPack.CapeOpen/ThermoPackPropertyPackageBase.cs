@@ -56,7 +56,7 @@ public abstract class ThermoPackPropertyPackageBase :
 
     private ThermoPackEngine? _engine;
     private ICapeThermoMaterial? _material;
-    private List<Component> _selectedComponents = new();
+    protected List<Component> _selectedComponents = new();
     private bool _isDirty;
 
     // COM object references (must be released via Marshal.ReleaseComObject)

@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Runtime.InteropServices;
 using ThermoPack.Core;
 using ThermoPack.Core.Models;
@@ -18,6 +19,21 @@ public class CpaPropertyPackage : ThermoPackPropertyPackageBase
 
     protected override void InitializeEngine(ThermoPackEngine engine, string compString)
     {
+        // CPA requires at least one self-associating component (one with CPA-* keys).
+        // Non-associating components are fine in the mixture, but Fortran crashes
+        // if no component self-associates.
+        bool hasAssociating = _selectedComponents.Any(c =>
+            c.AvailableEosKeys.Any(k => k.StartsWith("CPA-", StringComparison.OrdinalIgnoreCase)));
+
+        if (!hasAssociating)
+        {
+            var names = string.Join(", ", _selectedComponents.Select(c => c.Ident));
+            throw new InvalidOperationException(
+                $"CPA requires at least one self-associating component (e.g. H2O, MEOH, ETOH). " +
+                $"None of the selected components ({names}) have CPA association data. " +
+                $"Use SRK or PR instead for non-associating mixtures.");
+        }
+
         engine.InitCpa(compString, "SRK");
     }
 
