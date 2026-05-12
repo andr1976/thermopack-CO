@@ -1269,11 +1269,41 @@ public abstract class ThermoPackPropertyPackageBase :
         {
             double beta = label == PhaseVapour ? betaV : betaL;
             double[] comp = label == PhaseVapour ? yVap : xLiq;
+            int phase = label == PhaseVapour ? _engine!.VaporPhase : _engine!.LiquidPhase;
 
             wrapper.SetSinglePhaseProp("temperature", label, "", new[] { T });
             wrapper.SetSinglePhaseProp("pressure", label, "", new[] { P });
             wrapper.SetSinglePhaseProp("phaseFraction", label, "Mole", new[] { Math.Max(0, beta) });
             wrapper.SetSinglePhaseProp("fraction", label, "Mole", comp);
+
+            // Pre-compute per-phase thermodynamic properties so COFE can read them
+            // without a separate CalcSinglePhaseProp call.
+            if (_engine != null && beta > 1e-12)
+            {
+                try
+                {
+                    double h = _engine.Enthalpy(T, P, comp, phase);
+                    if (!double.IsNaN(h) && !double.IsInfinity(h))
+                        wrapper.SetSinglePhaseProp("enthalpy", label, "Mole", new[] { h });
+                }
+                catch { }
+
+                try
+                {
+                    double s = _engine.Entropy(T, P, comp, phase);
+                    if (!double.IsNaN(s) && !double.IsInfinity(s))
+                        wrapper.SetSinglePhaseProp("entropy", label, "Mole", new[] { s });
+                }
+                catch { }
+
+                try
+                {
+                    double v = _engine.SpecificVolume(T, P, comp, phase);
+                    if (!double.IsNaN(v) && !double.IsInfinity(v))
+                        wrapper.SetSinglePhaseProp("volume", label, "Mole", new[] { v });
+                }
+                catch { }
+            }
         }
     }
 
