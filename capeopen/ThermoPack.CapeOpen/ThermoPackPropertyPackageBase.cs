@@ -1245,7 +1245,7 @@ public abstract class ThermoPackPropertyPackageBase :
                 if (betaL > 1e-12) hMix += betaL * _engine.Enthalpy(T, P, xLiq, _engine.LiquidPhase);
                 wrapper.SetOverallProp("enthalpy", "Mole", new[] { hMix });
             }
-            catch (Exception ex) { Log($"WriteFlash: overall enthalpy FAILED: {ex.Message}"); throw; }
+            catch (Exception ex) { Log($"WriteFlash: overall enthalpy FAILED: {ex.Message}"); }
 
             try
             {
@@ -1254,7 +1254,7 @@ public abstract class ThermoPackPropertyPackageBase :
                 if (betaL > 1e-12) sMix += betaL * _engine.Entropy(T, P, xLiq, _engine.LiquidPhase);
                 wrapper.SetOverallProp("entropy", "Mole", new[] { sMix });
             }
-            catch (Exception ex) { Log($"WriteFlash: overall entropy FAILED: {ex.Message}"); throw; }
+            catch (Exception ex) { Log($"WriteFlash: overall entropy FAILED: {ex.Message}"); }
 
             try
             {
@@ -1263,7 +1263,7 @@ public abstract class ThermoPackPropertyPackageBase :
                 if (betaL > 1e-12) vMix += betaL * _engine.SpecificVolume(T, P, xLiq, _engine.LiquidPhase);
                 wrapper.SetOverallProp("volume", "Mole", new[] { vMix });
             }
-            catch (Exception ex) { Log($"WriteFlash: overall volume FAILED: {ex.Message}"); throw; }
+            catch (Exception ex) { Log($"WriteFlash: overall volume FAILED: {ex.Message}"); }
         }
 
         // Always report both phases so unit operations (compressor, etc.) can
@@ -1471,9 +1471,9 @@ public abstract class ThermoPackPropertyPackageBase :
 
     /// <summary>
     /// Correct flash results for single-phase / supercritical conditions.
-    /// Thermopack may return betaV/betaL outside [0,1] or phase==SINGLEPH.
-    /// In such cases, use GuessPhase to determine liquid/vapor and set
-    /// beta to 0 or 1, with X=Y=feed.
+    /// Thermopack may return betaV/betaL outside [0,1], phase==SINGLEPH,
+    /// or (for PH/PS flash) zero x[]/y[] arrays for single-phase results.
+    /// In such cases, set X=Y=feed.
     /// </summary>
     private void NormalizeFlashResult(FlashResult result, double[] feed, int nc)
     {
@@ -1489,7 +1489,13 @@ public abstract class ThermoPackPropertyPackageBase :
                               betaL < -1e-6 || betaL > 1.0 + 1e-6;
         bool betaSumBad = Math.Abs(betaV + betaL - 1.0) > 0.01;
 
-        if (phaseIsSingle || betaOutOfRange || betaSumBad)
+        // Thermopack PH/PS flash returns x[]=0, y[]=0 for single-phase results.
+        // Detect this and treat as single-phase.
+        bool xAllZero = result.X == null || ArraySum(result.X) < 1e-30;
+        bool yAllZero = result.Y == null || ArraySum(result.Y) < 1e-30;
+        bool compositionsEmpty = xAllZero && yAllZero;
+
+        if (phaseIsSingle || betaOutOfRange || betaSumBad || compositionsEmpty)
         {
             int guessedPhase;
             try
@@ -1509,23 +1515,40 @@ public abstract class ThermoPackPropertyPackageBase :
             {
                 result.BetaV = 1.0;
                 result.BetaL = 0.0;
-                result.Y = feedCopy;
-                result.X = feedCopy;
             }
             else
             {
                 result.BetaV = 0.0;
                 result.BetaL = 1.0;
-                result.X = feedCopy;
-                result.Y = feedCopy;
             }
+            result.X = feedCopy;
+            result.Y = (double[])feedCopy.Clone();
         }
         else
         {
             // Clamp two-phase betas to [0,1]
             result.BetaV = Math.Max(0, Math.Min(1, betaV));
             result.BetaL = Math.Max(0, Math.Min(1, betaL));
+
+            // For single-phase results (betaV≈1 or betaL≈1), the absent phase's
+            // composition may be zero/garbage from Fortran.  Fix it to feed.
+            var feedCopy = FitArray(feed, nc);
+            if (betaV > 1.0 - 1e-6 && xAllZero)
+                result.X = feedCopy;
+            if (betaL > 1.0 - 1e-6 && yAllZero)
+                result.Y = (double[])feedCopy.Clone();
         }
+    }
+
+    private static double ArraySum(double[] arr)
+    {
+        double s = 0;
+        for (int i = 0; i < arr.Length; i++)
+        {
+            if (double.IsNaN(arr[i]) || double.IsInfinity(arr[i])) return 0;
+            s += Math.Abs(arr[i]);
+        }
+        return s;
     }
 
     /// <summary>
