@@ -1050,8 +1050,10 @@ public abstract class ThermoPackPropertyPackageBase :
         int nc = _selectedComponents.Count;
         double T = _lastResult.Temperature;
         double P = _lastResult.Pressure;
-        int phase = phaseLabel == PhaseVapour ? _engine.VaporPhase : _engine.LiquidPhase;
-        double[] x = phaseLabel == PhaseVapour
+        bool isVapour = phaseLabel == PhaseVapour;
+        int phase = isVapour ? _engine.VaporPhase : _engine.LiquidPhase;
+        int altPhase = isVapour ? _engine.LiquidPhase : _engine.VaporPhase;
+        double[] x = isVapour
             ? FitArray(_lastResult.Y, nc)
             : FitArray(_lastResult.X, nc);
         SanitizeAndNormalize(x);
@@ -1061,37 +1063,44 @@ public abstract class ThermoPackPropertyPackageBase :
             case "enthalpy":
             case "enthalpyf":
             case "enthalpynf":
-                return new[] { _engine.Enthalpy(T, P, x, phase) };
+                return new[] { SafeCalc(() => _engine.Enthalpy(T, P, x, phase),
+                                        () => _engine.Enthalpy(T, P, x, altPhase)) };
 
             case "entropy":
             case "entropyf":
             case "entropynf":
-                return new[] { _engine.Entropy(T, P, x, phase) };
+                return new[] { SafeCalc(() => _engine.Entropy(T, P, x, phase),
+                                        () => _engine.Entropy(T, P, x, altPhase)) };
 
             case "volume":
             {
-                double v = _engine.SpecificVolume(T, P, x, phase);
+                double v = SafeCalc(() => _engine.SpecificVolume(T, P, x, phase),
+                                    () => _engine.SpecificVolume(T, P, x, altPhase));
                 return new[] { v };
             }
 
             case "density":
             {
-                double v = _engine.SpecificVolume(T, P, x, phase);
+                double v = SafeCalc(() => _engine.SpecificVolume(T, P, x, phase),
+                                    () => _engine.SpecificVolume(T, P, x, altPhase));
                 return new[] { v > 1e-30 ? 1.0 / v : 0.0 };
             }
 
             case "heatcapacitycp":
             {
-                var (_, dhdt) = _engine.EnthalpyWithCp(T, P, x, phase);
+                var dhdt = SafeCalc(() => _engine.EnthalpyWithCp(T, P, x, phase).Item2,
+                                    () => _engine.EnthalpyWithCp(T, P, x, altPhase).Item2);
                 return new[] { dhdt };
             }
 
             case "compressibilityfactor":
-                return new[] { _engine.ZFac(T, P, x, phase) };
+                return new[] { SafeCalc(() => _engine.ZFac(T, P, x, phase),
+                                        () => _engine.ZFac(T, P, x, altPhase)) };
 
             case "fugacitycoefficient":
             {
-                var lnphi = _engine.LnFugacityCoefficients(T, P, x, phase);
+                var lnphi = SafeCalcArr(() => _engine.LnFugacityCoefficients(T, P, x, phase),
+                                        () => _engine.LnFugacityCoefficients(T, P, x, altPhase));
                 var phi = new double[lnphi.Length];
                 for (int i = 0; i < lnphi.Length; i++)
                     phi[i] = Math.Exp(Math.Max(-30, Math.Min(30, lnphi[i])));
@@ -1100,7 +1109,8 @@ public abstract class ThermoPackPropertyPackageBase :
 
             case "logfugacitycoefficient":
             {
-                var lnphi = _engine.LnFugacityCoefficients(T, P, x, phase);
+                var lnphi = SafeCalcArr(() => _engine.LnFugacityCoefficients(T, P, x, phase),
+                                        () => _engine.LnFugacityCoefficients(T, P, x, altPhase));
                 var result = new double[lnphi.Length];
                 for (int i = 0; i < lnphi.Length; i++)
                     result[i] = Math.Max(-30, Math.Min(30, lnphi[i]));
@@ -1109,7 +1119,8 @@ public abstract class ThermoPackPropertyPackageBase :
 
             case "fugacity":
             {
-                var lnphi = _engine.LnFugacityCoefficients(T, P, x, phase);
+                var lnphi = SafeCalcArr(() => _engine.LnFugacityCoefficients(T, P, x, phase),
+                                        () => _engine.LnFugacityCoefficients(T, P, x, altPhase));
                 var fug = new double[lnphi.Length];
                 for (int i = 0; i < lnphi.Length; i++)
                     fug[i] = Math.Exp(Math.Max(-30, Math.Min(30, lnphi[i]))) * P * x[i];
@@ -1118,15 +1129,19 @@ public abstract class ThermoPackPropertyPackageBase :
 
             case "internalenergy":
             {
-                double h = _engine.Enthalpy(T, P, x, phase);
-                double v = _engine.SpecificVolume(T, P, x, phase);
+                double h = SafeCalc(() => _engine.Enthalpy(T, P, x, phase),
+                                    () => _engine.Enthalpy(T, P, x, altPhase));
+                double v = SafeCalc(() => _engine.SpecificVolume(T, P, x, phase),
+                                    () => _engine.SpecificVolume(T, P, x, altPhase));
                 return new[] { h - P * v };
             }
 
             case "gibbsenergy":
             {
-                double h = _engine.Enthalpy(T, P, x, phase);
-                double s = _engine.Entropy(T, P, x, phase);
+                double h = SafeCalc(() => _engine.Enthalpy(T, P, x, phase),
+                                    () => _engine.Enthalpy(T, P, x, altPhase));
+                double s = SafeCalc(() => _engine.Entropy(T, P, x, phase),
+                                    () => _engine.Entropy(T, P, x, altPhase));
                 return new[] { h - T * s };
             }
 
@@ -1241,35 +1256,23 @@ public abstract class ThermoPackPropertyPackageBase :
             catch { /* non-fatal: overall properties are convenience values */ }
         }
 
-        // Determine present phases
-        var labels = new List<string>();
-        var statuses = new List<int>();
-        bool forceTwo = flashType == FlashType.PVF || flashType == FlashType.TVF;
-
-        if (betaV > 1e-12 || forceTwo)
-        {
-            labels.Add(PhaseVapour);
-            statuses.Add(CapeAtEquilibrium);
-        }
-        if (betaL > 1e-12 || forceTwo)
-        {
-            labels.Add(PhaseLiquid);
-            statuses.Add(CapeAtEquilibrium);
-        }
-        if (labels.Count == 0)
-        {
-            // Shouldn't happen after normalization, but be safe
-            labels.Add(PhaseVapour);
-            statuses.Add(CapeAtEquilibrium);
-        }
-
-        wrapper.SetPresentPhases(labels.ToArray(), statuses.ToArray());
+        // Always report both phases so unit operations (compressor, etc.) can
+        // read properties for either phase.  For single-phase results the absent
+        // phase gets beta=0 and the same composition as the present phase.
+        var labels = new[] { PhaseVapour, PhaseLiquid };
+        var statuses = new[] { CapeAtEquilibrium, CapeAtEquilibrium };
+        wrapper.SetPresentPhases(labels, statuses);
 
         foreach (var label in labels)
         {
-            double beta = label == PhaseVapour ? betaV : betaL;
-            double[] comp = label == PhaseVapour ? yVap : xLiq;
-            int phase = label == PhaseVapour ? _engine!.VaporPhase : _engine!.LiquidPhase;
+            bool isVapour = label == PhaseVapour;
+            double beta = isVapour ? betaV : betaL;
+            // For the absent phase (beta≈0) use the same composition as feed
+            // so that property evaluations still succeed.
+            double[] comp = beta > 1e-12
+                ? (isVapour ? yVap : xLiq)
+                : (betaV > betaL ? yVap : xLiq);
+            int phase = isVapour ? _engine!.VaporPhase : _engine!.LiquidPhase;
 
             wrapper.SetSinglePhaseProp("temperature", label, "", new[] { T });
             wrapper.SetSinglePhaseProp("pressure", label, "", new[] { P });
@@ -1278,11 +1281,17 @@ public abstract class ThermoPackPropertyPackageBase :
 
             // Pre-compute per-phase thermodynamic properties so COFE can read them
             // without a separate CalcSinglePhaseProp call.
-            if (_engine != null && beta > 1e-12)
+            // For supercritical single-phase results, the requested phase root may
+            // not exist; fall back to the other phase flag which often gives the
+            // same (unique) root.
+            if (_engine != null)
             {
+                int altPhase = isVapour ? _engine.LiquidPhase : _engine.VaporPhase;
+
                 try
                 {
-                    double h = _engine.Enthalpy(T, P, comp, phase);
+                    double h = SafeCalc(() => _engine.Enthalpy(T, P, comp, phase),
+                                        () => _engine.Enthalpy(T, P, comp, altPhase));
                     if (!double.IsNaN(h) && !double.IsInfinity(h))
                         wrapper.SetSinglePhaseProp("enthalpy", label, "Mole", new[] { h });
                 }
@@ -1290,7 +1299,8 @@ public abstract class ThermoPackPropertyPackageBase :
 
                 try
                 {
-                    double s = _engine.Entropy(T, P, comp, phase);
+                    double s = SafeCalc(() => _engine.Entropy(T, P, comp, phase),
+                                        () => _engine.Entropy(T, P, comp, altPhase));
                     if (!double.IsNaN(s) && !double.IsInfinity(s))
                         wrapper.SetSinglePhaseProp("entropy", label, "Mole", new[] { s });
                 }
@@ -1298,7 +1308,8 @@ public abstract class ThermoPackPropertyPackageBase :
 
                 try
                 {
-                    double v = _engine.SpecificVolume(T, P, comp, phase);
+                    double v = SafeCalc(() => _engine.SpecificVolume(T, P, comp, phase),
+                                        () => _engine.SpecificVolume(T, P, comp, altPhase));
                     if (!double.IsNaN(v) && !double.IsInfinity(v))
                         wrapper.SetSinglePhaseProp("volume", label, "Mole", new[] { v });
                 }
@@ -1524,6 +1535,33 @@ public abstract class ThermoPackPropertyPackageBase :
             result.BetaV = Math.Max(0, Math.Min(1, betaV));
             result.BetaL = Math.Max(0, Math.Min(1, betaL));
         }
+    }
+
+    /// <summary>
+    /// Try primary calculation; if it returns NaN/Inf or throws, try the fallback.
+    /// Used to handle supercritical conditions where the requested phase root
+    /// doesn't exist but the other phase flag gives the unique root.
+    /// </summary>
+    private static double SafeCalc(Func<double> primary, Func<double> fallback)
+    {
+        try
+        {
+            double v = primary();
+            if (!double.IsNaN(v) && !double.IsInfinity(v)) return v;
+        }
+        catch { }
+        return fallback();
+    }
+
+    private static double[] SafeCalcArr(Func<double[]> primary, Func<double[]> fallback)
+    {
+        try
+        {
+            double[] v = primary();
+            if (v != null && v.Length > 0 && !double.IsNaN(v[0]) && !double.IsInfinity(v[0])) return v;
+        }
+        catch { }
+        return fallback();
     }
 
     private static void SanitizeAndNormalize(double[] arr)
