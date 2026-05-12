@@ -227,6 +227,10 @@ public class ThermoPackEngine : IDisposable
 
             _phFlash!(ref T, ref P, z, ref betaV, ref betaL, x, y, ref h, ref phase, ref ierr);
 
+            if (ierr != 0)
+                throw new InvalidOperationException(
+                    $"PH flash failed (ierr={ierr}) at P={P}, h={h}, T_guess={tempGuess}");
+
             return new FlashResult
             {
                 Temperature = T, Pressure = P,
@@ -249,6 +253,10 @@ public class ThermoPackEngine : IDisposable
             var y = new double[_nc];
 
             _psFlash!(ref T, ref P, z, ref betaV, ref betaL, x, y, ref s, ref phase, ref ierr);
+
+            if (ierr != 0)
+                throw new InvalidOperationException(
+                    $"PS flash failed (ierr={ierr}) at P={P}, s={s}, T_guess={tempGuess}");
 
             return new FlashResult
             {

@@ -385,6 +385,9 @@ public abstract class ThermoPackPropertyPackageBase :
             if (double.IsNaN(targetValue)) targetValue = 0.0;
         }
 
+        Log($"CalcEquilibrium: type={spec.Type}, T={T:F2}, P={P:F0}, target={targetValue:G6}, " +
+            $"feed=[{string.Join(",", feed.Select(f => f.ToString("G4")))}]");
+
         FlashResult result;
         switch (spec.Type)
         {
@@ -447,6 +450,8 @@ public abstract class ThermoPackPropertyPackageBase :
             var propNames = (string[])props;
             var wrapper = new MaterialObjectWrapper(_material);
 
+            Log($"CalcSinglePhaseProp: phase={phaseLabel}, props=[{string.Join(",", propNames)}]");
+
             foreach (var prop in propNames)
             {
                 double[] values = GetSinglePhasePropertyValues(prop, phaseLabel, wrapper);
@@ -460,6 +465,7 @@ public abstract class ThermoPackPropertyPackageBase :
         }
         catch (Exception ex)
         {
+            Log($"CalcSinglePhaseProp FAILED for phase {phaseLabel}: {ex.Message}");
             throw new COMException(
                 $"CalcSinglePhaseProp failed for phase {phaseLabel}: {ex.Message}",
                 ECapeCalculation);
@@ -1201,6 +1207,8 @@ public abstract class ThermoPackPropertyPackageBase :
     private void WriteFlashResultToMaterial(MaterialObjectWrapper wrapper,
         FlashResult result, int nc, double[] feed, FlashType flashType)
     {
+        Log($"WriteFlash: type={flashType}, T={result.Temperature:F2}, P={result.Pressure:F0}, " +
+            $"betaV={result.BetaV:G6}, betaL={result.BetaL:G6}, nc={nc}");
         // Note: result has already been normalized by NormalizeFlashResult()
         // so BetaV/BetaL are in [0,1] and phase is LIQPH or VAPPH.
         double T = result.Temperature;
@@ -1226,34 +1234,36 @@ public abstract class ThermoPackPropertyPackageBase :
         try { wrapper.SetOverallProp("pressure", "", new[] { P }); } catch { }
         try { wrapper.SetOverallProp("fraction", "Mole", overallFraction); } catch { }
 
-        // Compute and write overall H, S, V (mixture properties)
+        // Compute and write overall H, S, V (mixture properties).
+        // Each property is independent so one failure must not block the others.
         if (_engine != null)
         {
             try
             {
-                double hMix = 0, sMix = 0, vMix = 0;
-
-                if (betaV > 1e-12)
-                {
-                    hMix += betaV * _engine.Enthalpy(T, P, yVap, _engine.VaporPhase);
-                    sMix += betaV * _engine.Entropy(T, P, yVap, _engine.VaporPhase);
-                    vMix += betaV * _engine.SpecificVolume(T, P, yVap, _engine.VaporPhase);
-                }
-                if (betaL > 1e-12)
-                {
-                    hMix += betaL * _engine.Enthalpy(T, P, xLiq, _engine.LiquidPhase);
-                    sMix += betaL * _engine.Entropy(T, P, xLiq, _engine.LiquidPhase);
-                    vMix += betaL * _engine.SpecificVolume(T, P, xLiq, _engine.LiquidPhase);
-                }
-
-                if (!double.IsNaN(hMix) && !double.IsInfinity(hMix))
-                    wrapper.SetOverallProp("enthalpy", "Mole", new[] { hMix });
-                if (!double.IsNaN(sMix) && !double.IsInfinity(sMix))
-                    wrapper.SetOverallProp("entropy", "Mole", new[] { sMix });
-                if (!double.IsNaN(vMix) && !double.IsInfinity(vMix))
-                    wrapper.SetOverallProp("volume", "Mole", new[] { vMix });
+                double hMix = 0;
+                if (betaV > 1e-12) hMix += betaV * _engine.Enthalpy(T, P, yVap, _engine.VaporPhase);
+                if (betaL > 1e-12) hMix += betaL * _engine.Enthalpy(T, P, xLiq, _engine.LiquidPhase);
+                wrapper.SetOverallProp("enthalpy", "Mole", new[] { hMix });
             }
-            catch { /* non-fatal: overall properties are convenience values */ }
+            catch (Exception ex) { Log($"WriteFlash: overall enthalpy FAILED: {ex.Message}"); throw; }
+
+            try
+            {
+                double sMix = 0;
+                if (betaV > 1e-12) sMix += betaV * _engine.Entropy(T, P, yVap, _engine.VaporPhase);
+                if (betaL > 1e-12) sMix += betaL * _engine.Entropy(T, P, xLiq, _engine.LiquidPhase);
+                wrapper.SetOverallProp("entropy", "Mole", new[] { sMix });
+            }
+            catch (Exception ex) { Log($"WriteFlash: overall entropy FAILED: {ex.Message}"); throw; }
+
+            try
+            {
+                double vMix = 0;
+                if (betaV > 1e-12) vMix += betaV * _engine.SpecificVolume(T, P, yVap, _engine.VaporPhase);
+                if (betaL > 1e-12) vMix += betaL * _engine.SpecificVolume(T, P, xLiq, _engine.LiquidPhase);
+                wrapper.SetOverallProp("volume", "Mole", new[] { vMix });
+            }
+            catch (Exception ex) { Log($"WriteFlash: overall volume FAILED: {ex.Message}"); throw; }
         }
 
         // Always report both phases so unit operations (compressor, etc.) can
@@ -1267,54 +1277,35 @@ public abstract class ThermoPackPropertyPackageBase :
         {
             bool isVapour = label == PhaseVapour;
             double beta = isVapour ? betaV : betaL;
-            // For the absent phase (beta≈0) use the same composition as feed
+            // For the absent phase (beta≈0) use the dominant phase's composition
             // so that property evaluations still succeed.
             double[] comp = beta > 1e-12
                 ? (isVapour ? yVap : xLiq)
                 : (betaV > betaL ? yVap : xLiq);
             int phase = isVapour ? _engine!.VaporPhase : _engine!.LiquidPhase;
+            int altPhase = isVapour ? _engine!.LiquidPhase : _engine!.VaporPhase;
 
             wrapper.SetSinglePhaseProp("temperature", label, "", new[] { T });
             wrapper.SetSinglePhaseProp("pressure", label, "", new[] { P });
             wrapper.SetSinglePhaseProp("phaseFraction", label, "Mole", new[] { Math.Max(0, beta) });
             wrapper.SetSinglePhaseProp("fraction", label, "Mole", comp);
 
-            // Pre-compute per-phase thermodynamic properties so COFE can read them
-            // without a separate CalcSinglePhaseProp call.
-            // For supercritical single-phase results, the requested phase root may
-            // not exist; fall back to the other phase flag which often gives the
-            // same (unique) root.
-            if (_engine != null)
-            {
-                int altPhase = isVapour ? _engine.LiquidPhase : _engine.VaporPhase;
+            // Pre-compute per-phase H, S, V.  Try requested phase flag first;
+            // if that returns NaN (supercritical, only one EOS root), use the
+            // alternative phase flag.  No silent swallowing — let it throw.
+            double h = SafeCalc(() => _engine.Enthalpy(T, P, comp, phase),
+                                () => _engine.Enthalpy(T, P, comp, altPhase));
+            wrapper.SetSinglePhaseProp("enthalpy", label, "Mole", new[] { h });
 
-                try
-                {
-                    double h = SafeCalc(() => _engine.Enthalpy(T, P, comp, phase),
-                                        () => _engine.Enthalpy(T, P, comp, altPhase));
-                    if (!double.IsNaN(h) && !double.IsInfinity(h))
-                        wrapper.SetSinglePhaseProp("enthalpy", label, "Mole", new[] { h });
-                }
-                catch { }
+            double s = SafeCalc(() => _engine.Entropy(T, P, comp, phase),
+                                () => _engine.Entropy(T, P, comp, altPhase));
+            wrapper.SetSinglePhaseProp("entropy", label, "Mole", new[] { s });
 
-                try
-                {
-                    double s = SafeCalc(() => _engine.Entropy(T, P, comp, phase),
-                                        () => _engine.Entropy(T, P, comp, altPhase));
-                    if (!double.IsNaN(s) && !double.IsInfinity(s))
-                        wrapper.SetSinglePhaseProp("entropy", label, "Mole", new[] { s });
-                }
-                catch { }
+            double v = SafeCalc(() => _engine.SpecificVolume(T, P, comp, phase),
+                                () => _engine.SpecificVolume(T, P, comp, altPhase));
+            wrapper.SetSinglePhaseProp("volume", label, "Mole", new[] { v });
 
-                try
-                {
-                    double v = SafeCalc(() => _engine.SpecificVolume(T, P, comp, phase),
-                                        () => _engine.SpecificVolume(T, P, comp, altPhase));
-                    if (!double.IsNaN(v) && !double.IsInfinity(v))
-                        wrapper.SetSinglePhaseProp("volume", label, "Mole", new[] { v });
-                }
-                catch { }
-            }
+            Log($"WriteFlash: {label} beta={beta:G4} h={h:G6} s={s:G6} v={v:G6}");
         }
     }
 
@@ -1538,9 +1529,8 @@ public abstract class ThermoPackPropertyPackageBase :
     }
 
     /// <summary>
-    /// Try primary calculation; if it returns NaN/Inf or throws, try the fallback.
-    /// Used to handle supercritical conditions where the requested phase root
-    /// doesn't exist but the other phase flag gives the unique root.
+    /// Try primary calculation; if it returns NaN/Inf or throws, try the fallback
+    /// (alternative phase flag).  If both fail, throws — no silent swallowing.
     /// </summary>
     private static double SafeCalc(Func<double> primary, Func<double> fallback)
     {
@@ -1550,7 +1540,12 @@ public abstract class ThermoPackPropertyPackageBase :
             if (!double.IsNaN(v) && !double.IsInfinity(v)) return v;
         }
         catch { }
-        return fallback();
+        // Fallback: let it throw if it fails too
+        double fb = fallback();
+        if (double.IsNaN(fb) || double.IsInfinity(fb))
+            throw new InvalidOperationException(
+                "Property calculation returned NaN/Inf for both phase flags");
+        return fb;
     }
 
     private static double[] SafeCalcArr(Func<double[]> primary, Func<double[]> fallback)
@@ -1561,6 +1556,7 @@ public abstract class ThermoPackPropertyPackageBase :
             if (v != null && v.Length > 0 && !double.IsNaN(v[0]) && !double.IsInfinity(v[0])) return v;
         }
         catch { }
+        // Fallback: let it throw if it fails too
         return fallback();
     }
 
