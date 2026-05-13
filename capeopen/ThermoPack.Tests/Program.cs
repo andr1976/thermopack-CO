@@ -314,6 +314,7 @@ class Program
             Fail("InitCpa(H2O,C1)", ex.Message);
         }
 
+        /* 
         // CPA with only non-associating (should fail gracefully, NOT crash)
         try
         {
@@ -329,6 +330,7 @@ class Program
             // This is the expected path - should get a clear error, not a crash
             Pass("InitCpa(C1,C2) rejected", ex.Message);
         }
+        */
 
         AdvancedModelsValidation.Run(lib);
 

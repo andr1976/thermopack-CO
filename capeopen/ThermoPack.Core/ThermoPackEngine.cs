@@ -20,7 +20,10 @@ public class ThermoPackEngine : IDisposable
     private int _modelIndex;
     private int _nc;
     private bool _disposed;
-    private bool _faulted;
+
+    // Static: if ANY engine's Fortran call hangs/crashes, the shared library
+    // state is compromised and ALL engines must fail fast (they share a static lock).
+    private static volatile bool _faulted;
 
     // Thread safety: Fortran global state is not thread-safe
     private static readonly object _lock = new();
@@ -42,9 +45,9 @@ public class ThermoPackEngine : IDisposable
     /// Timeout in milliseconds for flash calculations.
     /// Protects the host process against Fortran solvers that hang
     /// (e.g. density solver infinite loops in multiparameter EOS).
-    /// Default: 30 seconds.
+    /// Default: 10 seconds.
     /// </summary>
-    public static int FlashTimeoutMs { get; set; } = 30_000;
+    public static int FlashTimeoutMs { get; set; } = 10_000;
 
     // ─── Cached delegates ─────────────────────────────────────────────
 
@@ -99,10 +102,9 @@ public class ThermoPackEngine : IDisposable
         // Create a new EOS slot
         var addEos = _lib.GetModuleDelegate<ThermoPackInterop.AddEosDelegate>(
             "thermopack_var", "add_eos");
-        lock (_lock)
-        {
-            _modelIndex = addEos();
-        }
+        AcquireFortranLock();
+        try { _modelIndex = addEos(); }
+        finally { ReleaseFortranLock(); }
     }
 
     private void Activate()
@@ -115,9 +117,9 @@ public class ThermoPackEngine : IDisposable
     public void InitCubic(string comps, string eos, string mixing = "vdW",
         string alpha = "Classic", string paramRef = "Default", bool volShift = false)
     {
-        lock (_lock)
+        AcquireFortranLock();
+        try
         {
-            CheckFaulted();
             Activate();
             var compsB = ToFortranString(comps);
             var eosB = ToFortranString(eos);
@@ -132,13 +134,14 @@ public class ThermoPackEngine : IDisposable
 
             _nc = CountComponents(comps);
         }
+        finally { ReleaseFortranLock(); }
     }
 
     public void InitTcPR(string comps, string mixing = "vdW", string paramRef = "Default")
     {
-        lock (_lock)
+        AcquireFortranLock();
+        try
         {
-            CheckFaulted();
             Activate();
             var compsB = ToFortranString(comps);
             var mixingB = ToFortranString(mixing);
@@ -149,14 +152,15 @@ public class ThermoPackEngine : IDisposable
 
             _nc = CountComponents(comps);
         }
+        finally { ReleaseFortranLock(); }
     }
 
     public void InitCpa(string comps, string eos = "SRK", string mixing = "vdW",
         string alpha = "Classic", string paramRef = "Default")
     {
-        lock (_lock)
+        AcquireFortranLock();
+        try
         {
-            CheckFaulted();
             Activate();
             var compsB = ToFortranString(comps);
             var eosB = ToFortranString(eos);
@@ -170,14 +174,15 @@ public class ThermoPackEngine : IDisposable
 
             _nc = CountComponents(comps);
         }
+        finally { ReleaseFortranLock(); }
     }
 
     public void InitPcSaft(string comps, string paramRef = "Default",
         bool simplified = false, bool polar = false)
     {
-        lock (_lock)
+        AcquireFortranLock();
+        try
         {
-            CheckFaulted();
             Activate();
             var compsB = ToFortranString(comps);
             var paramRefB = ToFortranString(paramRef);
@@ -189,14 +194,15 @@ public class ThermoPackEngine : IDisposable
 
             _nc = CountComponents(comps);
         }
+        finally { ReleaseFortranLock(); }
     }
 
     public void InitMultiparameter(string comps, string meos = "NIST_MEOS",
         string refState = "DEFAULT")
     {
-        lock (_lock)
+        AcquireFortranLock();
+        try
         {
-            CheckFaulted();
             Activate();
             var compsB = ToFortranString(comps);
             var meosB = ToFortranString(meos);
@@ -207,6 +213,7 @@ public class ThermoPackEngine : IDisposable
 
             _nc = CountComponents(comps);
         }
+        finally { ReleaseFortranLock(); }
     }
 
     // ─── Flash calculations ───────────────────────────────────────────
@@ -215,11 +222,9 @@ public class ThermoPackEngine : IDisposable
     {
         return RunWithTimeout(() =>
         {
-            lock (_lock)
-            {
-                CheckFaulted();
-                return TPFlashUnsafe(T, P, z);
-            }
+            AcquireFortranLock();
+            try { return TPFlashUnsafe(T, P, z); }
+            finally { ReleaseFortranLock(); }
         }, "TPFlash");
     }
 
@@ -246,9 +251,9 @@ public class ThermoPackEngine : IDisposable
     {
         return RunWithTimeout(() =>
         {
-            lock (_lock)
+            AcquireFortranLock();
+            try
             {
-                CheckFaulted();
                 Activate();
                 double T = tempGuess;
                 double betaV = 0, betaL = 0;
@@ -270,6 +275,7 @@ public class ThermoPackEngine : IDisposable
                     ErrorCode = ierr
                 };
             }
+            finally { ReleaseFortranLock(); }
         }, "PHFlash");
     }
 
@@ -277,9 +283,9 @@ public class ThermoPackEngine : IDisposable
     {
         return RunWithTimeout(() =>
         {
-            lock (_lock)
+            AcquireFortranLock();
+            try
             {
-                CheckFaulted();
                 Activate();
                 double T = tempGuess;
                 double betaV = 0, betaL = 0;
@@ -301,6 +307,7 @@ public class ThermoPackEngine : IDisposable
                     ErrorCode = ierr
                 };
             }
+            finally { ReleaseFortranLock(); }
         }, "PSFlash");
     }
 
@@ -309,9 +316,9 @@ public class ThermoPackEngine : IDisposable
     {
         return RunWithTimeout(() =>
         {
-            lock (_lock)
+            AcquireFortranLock();
+            try
             {
-                CheckFaulted();
                 Activate();
                 double T = tempGuess, P = pressGuess;
                 double betaV = 0, betaL = 0;
@@ -328,6 +335,7 @@ public class ThermoPackEngine : IDisposable
                     Phase = phase, X = x, Y = y
                 };
             }
+            finally { ReleaseFortranLock(); }
         }, "UVFlash");
     }
 
@@ -343,11 +351,9 @@ public class ThermoPackEngine : IDisposable
     {
         return RunWithTimeout(() =>
         {
-            lock (_lock)
-            {
-                CheckFaulted();
-                return PSFlashViaBrent(P, z, s, tempGuess);
-            }
+            AcquireFortranLock();
+            try { return PSFlashViaBrent(P, z, s, tempGuess); }
+            finally { ReleaseFortranLock(); }
         }, "PSFlashSafe");
     }
 
@@ -359,11 +365,9 @@ public class ThermoPackEngine : IDisposable
     {
         return RunWithTimeout(() =>
         {
-            lock (_lock)
-            {
-                CheckFaulted();
-                return PHFlashViaBrent(P, z, h, tempGuess);
-            }
+            AcquireFortranLock();
+            try { return PHFlashViaBrent(P, z, h, tempGuess); }
+            finally { ReleaseFortranLock(); }
         }, "PHFlashSafe");
     }
 
@@ -479,22 +483,30 @@ public class ThermoPackEngine : IDisposable
 
     public (double T, double[] y) BubbleTemperature(double P, double[] z)
     {
-        lock (_lock) { CheckFaulted(); return BubbleTemperatureUnsafe(P, z); }
+        AcquireFortranLock();
+        try { return BubbleTemperatureUnsafe(P, z); }
+        finally { ReleaseFortranLock(); }
     }
 
     public (double P, double[] y) BubblePressure(double T, double[] z)
     {
-        lock (_lock) { CheckFaulted(); return BubblePressureUnsafe(T, z); }
+        AcquireFortranLock();
+        try { return BubblePressureUnsafe(T, z); }
+        finally { ReleaseFortranLock(); }
     }
 
     public (double T, double[] x) DewTemperature(double P, double[] z)
     {
-        lock (_lock) { CheckFaulted(); return DewTemperatureUnsafe(P, z); }
+        AcquireFortranLock();
+        try { return DewTemperatureUnsafe(P, z); }
+        finally { ReleaseFortranLock(); }
     }
 
     public (double P, double[] x) DewPressure(double T, double[] z)
     {
-        lock (_lock) { CheckFaulted(); return DewPressureUnsafe(T, z); }
+        AcquireFortranLock();
+        try { return DewPressureUnsafe(T, z); }
+        finally { ReleaseFortranLock(); }
     }
 
     private (double T, double[] y) BubbleTemperatureUnsafe(double P, double[] z)
@@ -551,7 +563,8 @@ public class ThermoPackEngine : IDisposable
     /// </summary>
     public FlashResult PVFFlash(double P, double[] z, double betaVTarget)
     {
-        lock (_lock)
+        AcquireFortranLock();
+        try
         {
             if (betaVTarget <= 0.0)
             {
@@ -582,6 +595,7 @@ public class ThermoPackEngine : IDisposable
             double Tsol = BrentSolve(BrentFunc, Tlo, Thi, 1e-8, 50);
             return TPFlashUnsafe(Tsol, P, z);
         }
+        finally { ReleaseFortranLock(); }
     }
 
     /// <summary>
@@ -590,7 +604,8 @@ public class ThermoPackEngine : IDisposable
     /// </summary>
     public FlashResult TVFFlash(double T, double[] z, double betaVTarget)
     {
-        lock (_lock)
+        AcquireFortranLock();
+        try
         {
             if (betaVTarget <= 0.0)
             {
@@ -621,15 +636,16 @@ public class ThermoPackEngine : IDisposable
             double Psol = BrentSolve(BrentFunc, Plo, Phi, 1.0, 50);
             return TPFlashUnsafe(T, Psol, z);
         }
+        finally { ReleaseFortranLock(); }
     }
 
     // ─── Property calculations ────────────────────────────────────────
 
     public double Enthalpy(double T, double P, double[] x, int phase)
     {
-        lock (_lock)
+        AcquireFortranLock();
+        try
         {
-            CheckFaulted();
             Activate();
             double h = 0;
             int flag = 0;
@@ -637,13 +653,14 @@ public class ThermoPackEngine : IDisposable
                 IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, ref flag), "Enthalpy");
             return h;
         }
+        finally { ReleaseFortranLock(); }
     }
 
     public (double h, double dhdt) EnthalpyWithCp(double T, double P, double[] x, int phase)
     {
-        lock (_lock)
+        AcquireFortranLock();
+        try
         {
-            CheckFaulted();
             Activate();
             double h = 0, dhdt = 0;
             int flag = 0;
@@ -651,13 +668,14 @@ public class ThermoPackEngine : IDisposable
                 IntPtr.Zero, IntPtr.Zero, ref flag), "EnthalpyWithCp");
             return (h, dhdt);
         }
+        finally { ReleaseFortranLock(); }
     }
 
     public double Entropy(double T, double P, double[] x, int phase)
     {
-        lock (_lock)
+        AcquireFortranLock();
+        try
         {
-            CheckFaulted();
             Activate();
             double s = 0;
             int flag = 0;
@@ -665,26 +683,28 @@ public class ThermoPackEngine : IDisposable
                 IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, ref flag), "Entropy");
             return s;
         }
+        finally { ReleaseFortranLock(); }
     }
 
     public double SpecificVolume(double T, double P, double[] x, int phase)
     {
-        lock (_lock)
+        AcquireFortranLock();
+        try
         {
-            CheckFaulted();
             Activate();
             double v = 0;
             SafeCall(() => _specificVolume!(ref T, ref P, x, ref phase, ref v,
                 IntPtr.Zero, IntPtr.Zero, IntPtr.Zero), "SpecificVolume");
             return v;
         }
+        finally { ReleaseFortranLock(); }
     }
 
     public double[] LnFugacityCoefficients(double T, double P, double[] x, int phase)
     {
-        lock (_lock)
+        AcquireFortranLock();
+        try
         {
-            CheckFaulted();
             Activate();
             var lnfug = new double[_nc];
             int ophase = 0, meta = 0;
@@ -694,65 +714,71 @@ public class ThermoPackEngine : IDisposable
                 ref ophase, ref meta, ref v), "LnFugacityCoefficients");
             return lnfug;
         }
+        finally { ReleaseFortranLock(); }
     }
 
     public double ZFac(double T, double P, double[] x, int phase)
     {
-        lock (_lock)
+        AcquireFortranLock();
+        try
         {
-            CheckFaulted();
             Activate();
             double z = 0;
             SafeCall(() => _zfac!(ref T, ref P, x, ref phase, ref z,
                 IntPtr.Zero, IntPtr.Zero, IntPtr.Zero), "ZFac");
             return z;
         }
+        finally { ReleaseFortranLock(); }
     }
 
     public double CompMoleWeight(int index)
     {
-        lock (_lock)
+        AcquireFortranLock();
+        try
         {
-            CheckFaulted();
             Activate();
             int j = index;
             return SafeCall(() => _compMoleWeight!(ref j), "CompMoleWeight");
         }
+        finally { ReleaseFortranLock(); }
     }
 
     public (double Tc, double Pc, double omega, double Vc, double Tnb) GetCriticalParam(int index)
     {
-        lock (_lock)
+        AcquireFortranLock();
+        try
         {
-            CheckFaulted();
             Activate();
             int i = index;
             double tc = 0, pc = 0, omega = 0, vc = 0, tnb = 0;
             SafeCall(() => _getCriticalParam!(ref i, ref tc, ref pc, ref omega, ref vc, ref tnb), "GetCriticalParam");
             return (tc, pc, omega, vc, tnb);
         }
+        finally { ReleaseFortranLock(); }
     }
 
     public double GetRgas()
     {
-        lock (_lock)
+        AcquireFortranLock();
+        try
         {
-            CheckFaulted();
             Activate();
             return SafeCall(() => _getRgas!(), "GetRgas");
         }
+        finally { ReleaseFortranLock(); }
     }
 
     public double IdealEnthalpySingle(double T, int compIdx)
     {
-        lock (_lock)
+        AcquireFortranLock();
+        try
         {
-            CheckFaulted();
             Activate();
             double hId = 0;
             SafeCall(() => _idealEnthalpySingle!(ref T, ref compIdx, ref hId, IntPtr.Zero), "IdealEnthalpySingle");
             return hId;
         }
+        finally { ReleaseFortranLock(); }
     }
 
     // Phase flag accessors
@@ -769,14 +795,15 @@ public class ThermoPackEngine : IDisposable
     public int GuessPhase(double T, double P, double[] z)
     {
         if (_guessPhase == null) return _VAPPH; // fallback
-        lock (_lock)
+        AcquireFortranLock();
+        try
         {
-            CheckFaulted();
             Activate();
             int phase = 0;
             SafeCall(() => _guessPhase(ref T, ref P, z, ref phase), "GuessPhase");
             return phase;
         }
+        finally { ReleaseFortranLock(); }
     }
 
     // ─── Helper methods ───────────────────────────────────────────────
@@ -866,7 +893,8 @@ public class ThermoPackEngine : IDisposable
     private void LoadPhaseFlags()
     {
         if (_phaseFlagsLoaded) return;
-        lock (_lock)
+        AcquireFortranLock();
+        try
         {
             if (_phaseFlagsLoaded) return;
             try
@@ -888,6 +916,7 @@ public class ThermoPackEngine : IDisposable
             }
             _phaseFlagsLoaded = true;
         }
+        finally { ReleaseFortranLock(); }
     }
 
     private void LoadFortranTrue()
@@ -897,10 +926,9 @@ public class ThermoPackEngine : IDisposable
             var getTrue = _lib.GetModuleDelegate<ThermoPackInterop.GetTrueDelegate>(
                 "thermopack_constants", "get_true");
             int val = 0;
-            lock (_lock)
-            {
-                getTrue(ref val);
-            }
+            AcquireFortranLock();
+            try { getTrue(ref val); }
+            finally { ReleaseFortranLock(); }
             _trueInt = val;
         }
         catch
@@ -920,7 +948,8 @@ public class ThermoPackEngine : IDisposable
     private void ConfigureErrorHandling()
     {
         if (_errorHandlingConfigured) return;
-        lock (_lock)
+        AcquireFortranLock();
+        try
         {
             if (_errorHandlingConfigured) return;
 
@@ -947,6 +976,7 @@ public class ThermoPackEngine : IDisposable
 
             _errorHandlingConfigured = true;
         }
+        finally { ReleaseFortranLock(); }
     }
 
     /// <summary>
@@ -1103,11 +1133,13 @@ public class ThermoPackEngine : IDisposable
     /// <summary>
     /// Runs a flash calculation on a background thread with a timeout.
     /// If the Fortran call hangs (e.g. density solver infinite loop),
-    /// the engine is marked as faulted after the timeout expires.
+    /// the library is marked as faulted after the timeout expires.
     /// The background thread may leak, but the host process survives.
     /// </summary>
     private T RunWithTimeout<T>(Func<T> work, string operation)
     {
+        CheckFaulted();
+
         if (FlashTimeoutMs <= 0)
             return work();
 
@@ -1135,24 +1167,49 @@ public class ThermoPackEngine : IDisposable
             return result;
         }
 
-        // Timeout expired — Fortran is stuck
+        // Timeout expired — Fortran is stuck, the static lock is held by the
+        // stuck worker thread so ALL engines must fail fast from now on.
         _faulted = true;
         throw new InvalidOperationException(
             $"{operation} timed out after {FlashTimeoutMs}ms. " +
-            "The Fortran solver appears to be stuck. " +
-            "The engine is no longer usable — re-initialize the property package to recover.");
+            "The Fortran solver appears to be stuck (e.g. GERG-2008 density solver infinite loop). " +
+            "All ThermoPack engines are disabled — restart the application to recover.");
     }
+
+    // ─── Fortran lock helpers ────────────────────────────────────────
+
+    /// <summary>
+    /// Acquires the Fortran lock with a timeout. Checks faulted state first
+    /// to avoid blocking on a lock permanently held by a stuck worker thread.
+    /// Caller MUST use try/finally { ReleaseFortranLock(); }.
+    /// </summary>
+    private static void AcquireFortranLock()
+    {
+        CheckFaulted();
+        int timeout = FlashTimeoutMs > 0 ? FlashTimeoutMs : 30000;
+        bool taken = false;
+        Monitor.TryEnter(_lock, timeout, ref taken);
+        if (!taken)
+        {
+            _faulted = true;
+            throw new InvalidOperationException(
+                "Fortran lock acquisition timed out — a previous calculation may be stuck. " +
+                "All ThermoPack engines are disabled — restart the application to recover.");
+        }
+    }
+
+    private static void ReleaseFortranLock() => Monitor.Exit(_lock);
 
     // ─── Fortran crash protection ────────────────────────────────────
 
-    public bool IsFaulted => _faulted;
+    public static bool IsFaulted => _faulted;
 
-    private void CheckFaulted()
+    private static void CheckFaulted()
     {
         if (_faulted)
             throw new InvalidOperationException(
-                "Fortran library has crashed. The engine is no longer usable. " +
-                "Re-initialize the property package to recover.");
+                "Fortran library has faulted (a previous calculation timed out or crashed). " +
+                "All ThermoPack engines are disabled — restart the application to recover.");
     }
 
     /// <summary>
@@ -1220,10 +1277,14 @@ public class ThermoPackEngine : IDisposable
         {
             try
             {
-                lock (_lock)
+                bool taken = false;
+                Monitor.TryEnter(_lock, 2000, ref taken);
+                if (taken)
                 {
-                    _deleteEos!(ref _modelIndex);
+                    try { _deleteEos!(ref _modelIndex); }
+                    finally { Monitor.Exit(_lock); }
                 }
+                // If lock acquisition fails (stuck thread), skip cleanup silently
             }
             catch { }
         }
