@@ -1164,13 +1164,23 @@ public class ThermoPackEngine : IDisposable
 
     // ─── Timeout protection ──────────────────────────────────────────
 
-    // Windows APIs for suspending a stuck Fortran thread.
+    // Windows APIs for suspending a stuck Fortran thread and hiding dialogs.
+    //
     // When the Intel Fortran runtime hits a fatal error, it shows a modal
-    // "Intel(r) Visual Fortran run-time error" dialog and then calls
-    // ExitProcess() when the user clicks OK — killing the entire host process.
-    // By suspending the stuck thread after our timeout, we prevent ExitProcess
-    // from ever being called.  The thread is leaked (suspended forever) but
-    // the host process (COFE) survives.
+    // "Intel(r) Visual Fortran run-time error" dialog (via MessageBox) and
+    // then calls ExitProcess() when the user clicks OK — killing the entire
+    // host process (COFE).
+    //
+    // Defence strategy:
+    //   1. Run every Fortran call on a background thread with a timeout.
+    //   2. Run a concurrent "dialog watcher" thread that polls every 50ms
+    //      for the Intel Fortran dialog window.
+    //   3. As soon as the dialog is detected (or the timeout fires):
+    //      a) Suspend the worker thread  → prevents ExitProcess()
+    //      b) Hide the dialog window     → removes the visual artefact
+    //      c) Set _faulted = true        → all future Fortran calls fail fast
+    //   The worker thread is leaked (suspended forever) but the host survives.
+
     [DllImport("kernel32.dll")]
     private static extern uint GetCurrentThreadId();
 
@@ -1184,7 +1194,6 @@ public class ThermoPackEngine : IDisposable
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool CloseHandle(IntPtr hObject);
 
-    // For finding and hiding the Intel Fortran error dialog
     private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 
     [DllImport("user32.dll")]
@@ -1208,9 +1217,9 @@ public class ThermoPackEngine : IDisposable
 
     /// <summary>
     /// Runs a flash calculation on a background thread with a timeout.
-    /// If the Fortran call hangs (e.g. density solver infinite loop) or the
-    /// Intel Fortran runtime shows an error dialog, the background thread is
-    /// suspended to prevent ExitProcess() from killing the host.
+    /// A concurrent dialog-watcher thread detects the Intel Fortran runtime
+    /// error dialog within ~50ms and suspends the worker thread before the
+    /// user (or the Intel runtime) can trigger ExitProcess().
     /// </summary>
     private T RunWithTimeout<T>(Func<T> work, string operation)
     {
@@ -1223,7 +1232,12 @@ public class ThermoPackEngine : IDisposable
         Exception? workerException = null;
         uint workerNativeThreadId = 0;
 
-        var thread = new Thread(() =>
+        // Signals: worker completed normally, or Intel dialog detected
+        var completed = new ManualResetEvent(false);
+        var dialogDetected = new ManualResetEvent(false);
+
+        // ── Worker thread ──────────────────────────────────────────
+        var workerThread = new Thread(() =>
         {
             if (IsWindows)
                 workerNativeThreadId = GetCurrentThreadId();
@@ -1235,64 +1249,135 @@ public class ThermoPackEngine : IDisposable
             {
                 workerException = ex;
             }
+            finally
+            {
+                completed.Set();
+            }
         });
-        thread.IsBackground = true;
-        thread.Start();
+        workerThread.IsBackground = true;
+        workerThread.Start();
 
-        // Give the thread a moment to capture its native thread ID
-        Thread.Sleep(1);
-
-        if (thread.Join(FlashTimeoutMs))
+        // ── Dialog watcher thread (Windows only) ───────────────────
+        // Polls for the Intel Fortran error dialog every 50ms.
+        // As soon as it appears, suspends the worker and signals.
+        if (IsWindows)
         {
-            // Thread completed within timeout
+            var watcherThread = new Thread(() =>
+            {
+                uint pid = (uint)Process.GetCurrentProcess().Id;
+                while (!completed.WaitOne(50))
+                {
+                    if (_faulted) return;
+                    if (DetectAndSuppressIntelDialog(pid, workerNativeThreadId))
+                    {
+                        dialogDetected.Set();
+                        return;
+                    }
+                }
+            });
+            watcherThread.IsBackground = true;
+            watcherThread.Start();
+        }
+
+        // ── Wait for completion, dialog, or timeout ────────────────
+        int waitIdx = WaitHandle.WaitAny(
+            new WaitHandle[] { completed, dialogDetected },
+            FlashTimeoutMs);
+
+        if (waitIdx == 0)
+        {
+            // Worker completed within timeout — normal path
             if (workerException != null)
                 ExceptionDispatchInfo.Capture(workerException).Throw();
             return result;
         }
 
-        // Timeout expired — Fortran is stuck (infinite loop or Intel runtime
-        // error dialog blocking on MessageBox).  We MUST suspend the stuck
-        // thread to prevent the Intel Fortran runtime from calling ExitProcess()
-        // when its error dialog is dismissed.
+        // Either the Intel dialog was detected (waitIdx == 1) or
+        // the timeout fired (waitIdx == WaitHandle.WaitTimeout).
         _faulted = true;
 
-        if (IsWindows && workerNativeThreadId != 0)
+        string reason;
+        if (waitIdx == 1)
         {
-            try
+            reason = "Intel Fortran runtime error detected";
+        }
+        else
+        {
+            reason = $"timed out after {FlashTimeoutMs}ms";
+            // Timeout path: watcher may not have caught a dialog yet,
+            // do a final suspend + hide pass.
+            if (IsWindows && workerNativeThreadId != 0)
+                SuspendAndHide(workerNativeThreadId);
+        }
+
+        throw new InvalidOperationException(
+            $"{operation}: {reason}. " +
+            "The Fortran solver encountered a fatal error (e.g. GERG-2008 density solver). " +
+            "All ThermoPack engines are disabled — restart the application to recover.");
+    }
+
+    /// <summary>
+    /// Check for an "Intel(r) Visual Fortran run-time error" dialog belonging
+    /// to this process.  If found, immediately suspend the worker thread and
+    /// hide the dialog window.  Returns true if the dialog was found.
+    /// </summary>
+    private static bool DetectAndSuppressIntelDialog(uint pid, uint workerThreadId)
+    {
+        bool found = false;
+        try
+        {
+            EnumWindows((hWnd, _) =>
             {
-                IntPtr hThread = OpenThread(THREAD_SUSPEND_RESUME, false, workerNativeThreadId);
+                GetWindowThreadProcessId(hWnd, out uint windowPid);
+                if (windowPid != pid) return true;
+
+                var sb = new StringBuilder(256);
+                GetWindowText(hWnd, sb, sb.Capacity);
+                string title = sb.ToString();
+                if (title.IndexOf("Intel", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                    title.IndexOf("Fortran", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    // Found the Intel dialog — suspend the worker thread FIRST
+                    // (before the user or OS can click OK → ExitProcess).
+                    SuspendAndHide(workerThreadId);
+                    found = true;
+                    return false; // stop enumeration
+                }
+                return true;
+            }, IntPtr.Zero);
+        }
+        catch { }
+        return found;
+    }
+
+    /// <summary>
+    /// Suspend a native thread and hide any Intel Fortran dialog windows.
+    /// </summary>
+    private static void SuspendAndHide(uint nativeThreadId)
+    {
+        // Suspend the worker thread to prevent ExitProcess()
+        try
+        {
+            if (nativeThreadId != 0)
+            {
+                IntPtr hThread = OpenThread(THREAD_SUSPEND_RESUME, false, nativeThreadId);
                 if (hThread != IntPtr.Zero)
                 {
                     SuspendThread(hThread);
                     CloseHandle(hThread);
                 }
             }
-            catch { /* Best-effort — if this fails, the process may still terminate */ }
-
-            // Hide any visible Intel Fortran error dialog windows
-            HideIntelFortranDialogs();
         }
+        catch { }
 
-        throw new InvalidOperationException(
-            $"{operation} timed out after {FlashTimeoutMs}ms. " +
-            "The Fortran solver appears to be stuck (e.g. GERG-2008 density solver infinite loop). " +
-            "All ThermoPack engines are disabled — restart the application to recover.");
-    }
-
-    /// <summary>
-    /// Find and hide any "Intel(r) Visual Fortran run-time error" dialog windows
-    /// belonging to this process.  The owning thread has been suspended, so the
-    /// dialog is frozen — hiding it cleans up the visual artefact.
-    /// </summary>
-    private static void HideIntelFortranDialogs()
-    {
+        // Hide all Intel Fortran dialog windows in this process
         try
         {
             uint pid = (uint)Process.GetCurrentProcess().Id;
             EnumWindows((hWnd, _) =>
             {
                 GetWindowThreadProcessId(hWnd, out uint windowPid);
-                if (windowPid != pid) return true; // continue enumeration
+                if (windowPid != pid) return true;
 
                 var sb = new StringBuilder(256);
                 GetWindowText(hWnd, sb, sb.Capacity);
@@ -1302,7 +1387,7 @@ public class ThermoPackEngine : IDisposable
                 {
                     ShowWindow(hWnd, SW_HIDE);
                 }
-                return true; // continue enumeration
+                return true;
             }, IntPtr.Zero);
         }
         catch { }
