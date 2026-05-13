@@ -386,40 +386,54 @@ public abstract class ThermoPackPropertyPackageBase :
             if (double.IsNaN(targetValue)) targetValue = 0.0;
         }
 
-        Log($"CalcEquilibrium: type={spec.Type}, T={T:F2}, P={P:F0}, target={targetValue:G6}, " +
-            $"feed=[{string.Join(",", feed.Select(f => f.ToString("G4")))}]");
+        Log($"[{PackageName}] CalcEquilibrium: type={spec.Type}, T={T:F2}, P={P:F0}, " +
+            $"target={targetValue:G6}, feed=[{string.Join(",", feed.Select(f => f.ToString("G6")))}]");
 
         FlashResult result;
         switch (spec.Type)
         {
             case FlashType.PT:
+                Log($"[{PackageName}] Calling TwoPhaseTPFlash...");
                 result = _engine!.TwoPhaseTPFlash(T, P, feed);
                 break;
             case FlashType.PH:
+                Log($"[{PackageName}] Calling TwoPhasePHFlash(P={P:F0}, h={targetValue:G6}, Tguess={T:F2})...");
                 result = _engine!.TwoPhasePHFlash(P, feed, targetValue, T);
                 break;
             case FlashType.PS:
+                Log($"[{PackageName}] Calling TwoPhasePSFlash(P={P:F0}, s={targetValue:G6}, Tguess={T:F2})...");
                 result = _engine!.TwoPhasePSFlash(P, feed, targetValue, T);
                 break;
             case FlashType.UV:
             {
                 double uTarget = wrapper.ReadTargetValue("internalEnergy", "", "Overall");
                 double vTarget = wrapper.ReadTargetValue("volume", "", "Overall");
+                Log($"[{PackageName}] Calling TwoPhaseUVFlash(u={uTarget:G6}, v={vTarget:G6})...");
                 result = _engine!.TwoPhaseUVFlash(feed, uTarget, vTarget, T, P);
                 break;
             }
             case FlashType.PVF:
+                Log($"[{PackageName}] Calling PVFFlash(P={P:F0}, vf={targetValue:G6})...");
                 result = _engine!.PVFFlash(P, feed, targetValue);
                 break;
             case FlashType.TVF:
+                Log($"[{PackageName}] Calling TVFFlash(T={T:F2}, vf={targetValue:G6})...");
                 result = _engine!.TVFFlash(T, feed, targetValue);
                 break;
             default:
                 throw new COMException($"Unsupported flash type: {spec.Type}", ECapeUnknown);
         }
 
+        Log($"[{PackageName}] Flash returned: T={result.Temperature:F2}, P={result.Pressure:F0}, " +
+            $"betaV={result.BetaV:G6}, betaL={result.BetaL:G6}, phase={result.Phase}, " +
+            $"X=[{string.Join(",", result.X?.Select(v => v.ToString("G6")) ?? Array.Empty<string>())}], " +
+            $"Y=[{string.Join(",", result.Y?.Select(v => v.ToString("G6")) ?? Array.Empty<string>())}]");
+
         // Normalize single-phase results before caching
         NormalizeFlashResult(result, feed, nc);
+        Log($"[{PackageName}] After normalize: betaV={result.BetaV:G6}, betaL={result.BetaL:G6}, " +
+            $"X=[{string.Join(",", result.X.Select(v => v.ToString("G6")))}], " +
+            $"Y=[{string.Join(",", result.Y.Select(v => v.ToString("G6")))}]");
 
         // Cache
         _lastResult = result;
@@ -428,7 +442,9 @@ public abstract class ThermoPackPropertyPackageBase :
         _lastFeed = (double[])feed.Clone();
 
         // Write back to material
+        Log($"[{PackageName}] Writing flash result to material...");
         WriteFlashResultToMaterial(wrapper, result, nc, feed, spec.Type);
+        Log($"[{PackageName}] CalcEquilibrium complete.");
     }
 
     public bool CheckEquilibriumSpec(object specification1, object specification2, string solutionType)
@@ -451,7 +467,8 @@ public abstract class ThermoPackPropertyPackageBase :
             var propNames = (string[])props;
             var wrapper = new MaterialObjectWrapper(_material);
 
-            Log($"CalcSinglePhaseProp: phase={phaseLabel}, props=[{string.Join(",", propNames)}]");
+            Log($"[{PackageName}] CalcSinglePhaseProp: phase={phaseLabel}, props=[{string.Join(",", propNames)}], " +
+                $"T={_lastResult?.Temperature:F2}, P={_lastResult?.Pressure:F0}");
 
             foreach (var prop in propNames)
             {
@@ -1053,6 +1070,8 @@ public abstract class ThermoPackPropertyPackageBase :
 
         try
         {
+            Log($"[{PackageName}] EnsureFlashResult: TP flash T={T:F2}, P={P:F0}, " +
+                $"feed=[{string.Join(",", feed.Select(f => f.ToString("G6")))}]");
             _lastResult = _engine.TwoPhaseTPFlash(T, P, feed);
             NormalizeFlashResult(_lastResult, feed, nc);
             _lastT = T; _lastP = P; _lastFeed = (double[])feed.Clone();
@@ -1094,7 +1113,13 @@ public abstract class ThermoPackPropertyPackageBase :
         // from a single-phase flash), use the feed composition.  Passing zeros to Fortran
         // crashes CPA's LAPACK dsysv solver with an unrecoverable abort().
         if (ArraySum(x) < 1e-30 && _lastFeed != null)
+        {
+            Log($"[{PackageName}] WARNING: zero composition for {phaseLabel}, using feed fallback");
             x = NormalizeFeed(_lastFeed, nc);
+        }
+
+        Log($"[{PackageName}] GetProp({prop}, {phaseLabel}): T={T:F2}, P={P:F0}, " +
+            $"x=[{string.Join(",", x.Select(v => v.ToString("G6")))}], phase={phase}");
 
         switch (prop.ToLowerInvariant())
         {
@@ -1275,32 +1300,63 @@ public abstract class ThermoPackPropertyPackageBase :
         // Each property is independent so one failure must not block the others.
         if (_engine != null)
         {
+            Log($"[{PackageName}] WriteFlash: computing overall H,S,V. " +
+                $"xLiq=[{string.Join(",", xLiq.Select(v => v.ToString("G6")))}], " +
+                $"yVap=[{string.Join(",", yVap.Select(v => v.ToString("G6")))}]");
+
             try
             {
                 double hMix = 0;
-                if (betaV > 1e-12) hMix += betaV * _engine.Enthalpy(T, P, yVap, _engine.VaporPhase);
-                if (betaL > 1e-12) hMix += betaL * _engine.Enthalpy(T, P, xLiq, _engine.LiquidPhase);
+                if (betaV > 1e-12)
+                {
+                    Log($"[{PackageName}] WriteFlash: Enthalpy(T={T:F2},P={P:F0},yVap,VAPPH)...");
+                    hMix += betaV * _engine.Enthalpy(T, P, yVap, _engine.VaporPhase);
+                }
+                if (betaL > 1e-12)
+                {
+                    Log($"[{PackageName}] WriteFlash: Enthalpy(T={T:F2},P={P:F0},xLiq,LIQPH)...");
+                    hMix += betaL * _engine.Enthalpy(T, P, xLiq, _engine.LiquidPhase);
+                }
                 wrapper.SetOverallProp("enthalpy", "Mole", new[] { hMix });
+                Log($"[{PackageName}] WriteFlash: overall H={hMix:G6}");
             }
-            catch (Exception ex) { Log($"WriteFlash: overall enthalpy FAILED: {ex.Message}"); }
+            catch (Exception ex) { Log($"[{PackageName}] WriteFlash: overall enthalpy FAILED: {ex.Message}"); }
 
             try
             {
                 double sMix = 0;
-                if (betaV > 1e-12) sMix += betaV * _engine.Entropy(T, P, yVap, _engine.VaporPhase);
-                if (betaL > 1e-12) sMix += betaL * _engine.Entropy(T, P, xLiq, _engine.LiquidPhase);
+                if (betaV > 1e-12)
+                {
+                    Log($"[{PackageName}] WriteFlash: Entropy(T={T:F2},P={P:F0},yVap,VAPPH)...");
+                    sMix += betaV * _engine.Entropy(T, P, yVap, _engine.VaporPhase);
+                }
+                if (betaL > 1e-12)
+                {
+                    Log($"[{PackageName}] WriteFlash: Entropy(T={T:F2},P={P:F0},xLiq,LIQPH)...");
+                    sMix += betaL * _engine.Entropy(T, P, xLiq, _engine.LiquidPhase);
+                }
                 wrapper.SetOverallProp("entropy", "Mole", new[] { sMix });
+                Log($"[{PackageName}] WriteFlash: overall S={sMix:G6}");
             }
-            catch (Exception ex) { Log($"WriteFlash: overall entropy FAILED: {ex.Message}"); }
+            catch (Exception ex) { Log($"[{PackageName}] WriteFlash: overall entropy FAILED: {ex.Message}"); }
 
             try
             {
                 double vMix = 0;
-                if (betaV > 1e-12) vMix += betaV * _engine.SpecificVolume(T, P, yVap, _engine.VaporPhase);
-                if (betaL > 1e-12) vMix += betaL * _engine.SpecificVolume(T, P, xLiq, _engine.LiquidPhase);
+                if (betaV > 1e-12)
+                {
+                    Log($"[{PackageName}] WriteFlash: SpecVol(T={T:F2},P={P:F0},yVap,VAPPH)...");
+                    vMix += betaV * _engine.SpecificVolume(T, P, yVap, _engine.VaporPhase);
+                }
+                if (betaL > 1e-12)
+                {
+                    Log($"[{PackageName}] WriteFlash: SpecVol(T={T:F2},P={P:F0},xLiq,LIQPH)...");
+                    vMix += betaL * _engine.SpecificVolume(T, P, xLiq, _engine.LiquidPhase);
+                }
                 wrapper.SetOverallProp("volume", "Mole", new[] { vMix });
+                Log($"[{PackageName}] WriteFlash: overall V={vMix:G6}");
             }
-            catch (Exception ex) { Log($"WriteFlash: overall volume FAILED: {ex.Message}"); }
+            catch (Exception ex) { Log($"[{PackageName}] WriteFlash: overall volume FAILED: {ex.Message}"); }
         }
 
         // Only report phases that are actually present.  Reporting an absent
@@ -1333,6 +1389,8 @@ public abstract class ThermoPackPropertyPackageBase :
             // Pre-compute per-phase H, S, V.  Try requested phase flag first;
             // if that returns NaN (supercritical, only one EOS root), use the
             // alternative phase flag.
+            Log($"[{PackageName}] WriteFlash: phase {label} H(T={T:F2},P={P:F0}," +
+                $"comp=[{string.Join(",", comp.Select(v => v.ToString("G6")))}])...");
             double h = SafeCalc(() => _engine.Enthalpy(T, P, comp, phase),
                                 () => _engine.Enthalpy(T, P, comp, altPhase));
             wrapper.SetSinglePhaseProp("enthalpy", label, "Mole", new[] { h });

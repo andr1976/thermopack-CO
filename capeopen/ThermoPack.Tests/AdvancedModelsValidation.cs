@@ -20,7 +20,7 @@ public static class AdvancedModelsValidation
 
     public static void Run(ThermoPackLibrary lib)
     {
-        Console.WriteLine("--- Advanced Models Validation (C#) ---");
+        Console.WriteLine("\n--- Advanced Models Validation (C#) ---");
         
         ValidateCpa(lib);
         ValidateTcPr(lib);
@@ -52,9 +52,9 @@ public static class AdvancedModelsValidation
         double diff = Math.Abs(PbubKpa - targetKpa) / targetKpa * 100;
         
         Console.WriteLine($"  T = {T} K, x_EtOH = {z[0]}");
-        Console.WriteLine($"  P_calc: {PbubKpa,10.4f} kPa");
-        Console.WriteLine($"  P_ref:  {targetKpa,10.4f} kPa (Pemberton & Mash)");
-        Console.WriteLine($"  Diff%:  {diff,10.4e}%");
+        Console.WriteLine($"  P_calc: {PbubKpa,10:F4} kPa");
+        Console.WriteLine($"  P_ref:  {targetKpa,10:F4} kPa (Pemberton & Mash)");
+        Console.WriteLine($"  Diff%:  {diff:E4}%");
     }
 
     private static void ValidateTcPr(ThermoPackLibrary lib)
@@ -77,7 +77,7 @@ public static class AdvancedModelsValidation
         double targetPcMpa = 8.9609;
 
         Console.WriteLine($"  Mixture: 90% CO2, 10% N2");
-        Console.WriteLine($"  Tc_calc: {tc,10.4f} K  (Ref: {targetTc:F4})");
-        Console.WriteLine($"  Pc_calc: {pc * 1e-6,10.4f} MPa (Ref: {targetPcMpa:F4})");
+        Console.WriteLine($"  Tc_calc: {tc,10:F4} K  (Ref: {targetTc:F4})");
+        Console.WriteLine($"  Pc_calc: {pc * 1e-6,10:F4} MPa (Ref: {targetPcMpa:F4})");
     }
 }
