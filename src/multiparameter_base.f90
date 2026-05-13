@@ -867,7 +867,10 @@ contains
             print *, "curvature", (rho-rhoOld)*(dpdrho-dpdrhoOld)
             call stoperror("multiparameter_eos::densitySolver: iter == max_iter.")
           end if
+        else
+          if (present(ierr)) ierr = 1
         end if
+        exit
       end if
     end do
 

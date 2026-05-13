@@ -1,7 +1,11 @@
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Linq;
 using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
 using System.Security;
 using System.Text;
+using System.Threading;
 using ThermoPack.Core.Models;
 
 namespace ThermoPack.Core;
@@ -30,6 +34,17 @@ public class ThermoPackEngine : IDisposable
 
     // Fortran true value (gfortran=1, ifort=-1)
     private int _trueInt = 1;
+
+    // Error handling: prevent Fortran exit()/abort() from killing the host process
+    private static bool _errorHandlingConfigured;
+
+    /// <summary>
+    /// Timeout in milliseconds for flash calculations.
+    /// Protects the host process against Fortran solvers that hang
+    /// (e.g. density solver infinite loops in multiparameter EOS).
+    /// Default: 30 seconds.
+    /// </summary>
+    public static int FlashTimeoutMs { get; set; } = 30_000;
 
     // ─── Cached delegates ─────────────────────────────────────────────
 
@@ -79,6 +94,7 @@ public class ThermoPackEngine : IDisposable
         ResolveDelegates();
         LoadPhaseFlags();
         LoadFortranTrue();
+        ConfigureErrorHandling();
 
         // Create a new EOS slot
         var addEos = _lib.GetModuleDelegate<ThermoPackInterop.AddEosDelegate>(
@@ -197,11 +213,14 @@ public class ThermoPackEngine : IDisposable
 
     public FlashResult TwoPhaseTPFlash(double T, double P, double[] z)
     {
-        lock (_lock)
+        return RunWithTimeout(() =>
         {
-            CheckFaulted();
-            return TPFlashUnsafe(T, P, z);
-        }
+            lock (_lock)
+            {
+                CheckFaulted();
+                return TPFlashUnsafe(T, P, z);
+            }
+        }, "TPFlash");
     }
 
     /// <summary>TP flash without locking. Caller must hold _lock.</summary>
@@ -225,82 +244,235 @@ public class ThermoPackEngine : IDisposable
 
     public FlashResult TwoPhasePHFlash(double P, double[] z, double h, double tempGuess = 298.15)
     {
-        lock (_lock)
+        return RunWithTimeout(() =>
         {
-            CheckFaulted();
-            Activate();
-            double T = tempGuess;
-            double betaV = 0, betaL = 0;
-            int phase = 0, ierr = 0;
-            var x = new double[_nc];
-            var y = new double[_nc];
-
-            SafeCall(() => _phFlash!(ref T, ref P, z, ref betaV, ref betaL, x, y, ref h, ref phase, ref ierr), "PHFlash");
-
-            if (ierr != 0)
-                throw new InvalidOperationException(
-                    $"PH flash failed (ierr={ierr}) at P={P}, h={h}, T_guess={tempGuess}");
-
-            return new FlashResult
+            lock (_lock)
             {
-                Temperature = T, Pressure = P,
-                BetaV = betaV, BetaL = betaL,
-                Phase = phase, X = x, Y = y,
-                ErrorCode = ierr
-            };
-        }
+                CheckFaulted();
+                Activate();
+                double T = tempGuess;
+                double betaV = 0, betaL = 0;
+                int phase = 0, ierr = 0;
+                var x = new double[_nc];
+                var y = new double[_nc];
+
+                SafeCall(() => _phFlash!(ref T, ref P, z, ref betaV, ref betaL, x, y, ref h, ref phase, ref ierr), "PHFlash");
+
+                if (ierr != 0)
+                    throw new InvalidOperationException(
+                        $"PH flash failed (ierr={ierr}) at P={P}, h={h}, T_guess={tempGuess}");
+
+                return new FlashResult
+                {
+                    Temperature = T, Pressure = P,
+                    BetaV = betaV, BetaL = betaL,
+                    Phase = phase, X = x, Y = y,
+                    ErrorCode = ierr
+                };
+            }
+        }, "PHFlash");
     }
 
     public FlashResult TwoPhasePSFlash(double P, double[] z, double s, double tempGuess = 298.15)
     {
-        lock (_lock)
+        return RunWithTimeout(() =>
         {
-            CheckFaulted();
-            Activate();
-            double T = tempGuess;
-            double betaV = 0, betaL = 0;
-            int phase = 0, ierr = 0;
-            var x = new double[_nc];
-            var y = new double[_nc];
-
-            SafeCall(() => _psFlash!(ref T, ref P, z, ref betaV, ref betaL, x, y, ref s, ref phase, ref ierr), "PSFlash");
-
-            if (ierr != 0)
-                throw new InvalidOperationException(
-                    $"PS flash failed (ierr={ierr}) at P={P}, s={s}, T_guess={tempGuess}");
-
-            return new FlashResult
+            lock (_lock)
             {
-                Temperature = T, Pressure = P,
-                BetaV = betaV, BetaL = betaL,
-                Phase = phase, X = x, Y = y,
-                ErrorCode = ierr
-            };
-        }
+                CheckFaulted();
+                Activate();
+                double T = tempGuess;
+                double betaV = 0, betaL = 0;
+                int phase = 0, ierr = 0;
+                var x = new double[_nc];
+                var y = new double[_nc];
+
+                SafeCall(() => _psFlash!(ref T, ref P, z, ref betaV, ref betaL, x, y, ref s, ref phase, ref ierr), "PSFlash");
+
+                if (ierr != 0)
+                    throw new InvalidOperationException(
+                        $"PS flash failed (ierr={ierr}) at P={P}, s={s}, T_guess={tempGuess}");
+
+                return new FlashResult
+                {
+                    Temperature = T, Pressure = P,
+                    BetaV = betaV, BetaL = betaL,
+                    Phase = phase, X = x, Y = y,
+                    ErrorCode = ierr
+                };
+            }
+        }, "PSFlash");
     }
 
     public FlashResult TwoPhaseUVFlash(double[] z, double u, double v,
         double tempGuess = 298.15, double pressGuess = 101325.0)
     {
-        lock (_lock)
+        return RunWithTimeout(() =>
         {
-            CheckFaulted();
-            Activate();
-            double T = tempGuess, P = pressGuess;
-            double betaV = 0, betaL = 0;
-            int phase = 0;
-            var x = new double[_nc];
-            var y = new double[_nc];
-
-            SafeCall(() => _uvFlash!(ref T, ref P, z, ref betaV, ref betaL, x, y, ref u, ref v, ref phase), "UVFlash");
-
-            return new FlashResult
+            lock (_lock)
             {
-                Temperature = T, Pressure = P,
-                BetaV = betaV, BetaL = betaL,
-                Phase = phase, X = x, Y = y
-            };
+                CheckFaulted();
+                Activate();
+                double T = tempGuess, P = pressGuess;
+                double betaV = 0, betaL = 0;
+                int phase = 0;
+                var x = new double[_nc];
+                var y = new double[_nc];
+
+                SafeCall(() => _uvFlash!(ref T, ref P, z, ref betaV, ref betaL, x, y, ref u, ref v, ref phase), "UVFlash");
+
+                return new FlashResult
+                {
+                    Temperature = T, Pressure = P,
+                    BetaV = betaV, BetaL = betaL,
+                    Phase = phase, X = x, Y = y
+                };
+            }
+        }, "UVFlash");
+    }
+
+    // ─── Safe PS/PH flash (TP-flash based, avoids Fortran PS/PH solver crash) ──
+
+    /// <summary>
+    /// PS flash using TP flash + Brent's method.  Avoids the Fortran PS solver
+    /// which can call abort() for some EOS/composition combinations (e.g.
+    /// GERG-2008 with near-zero mole fractions).
+    /// Finds T such that S_mix(T, P, z) == s_target.
+    /// </summary>
+    public FlashResult TwoPhasePSFlashSafe(double P, double[] z, double s, double tempGuess = 298.15)
+    {
+        return RunWithTimeout(() =>
+        {
+            lock (_lock)
+            {
+                CheckFaulted();
+                return PSFlashViaBrent(P, z, s, tempGuess);
+            }
+        }, "PSFlashSafe");
+    }
+
+    /// <summary>
+    /// PH flash using TP flash + Brent's method.  Avoids the Fortran PH solver.
+    /// Finds T such that H_mix(T, P, z) == h_target.
+    /// </summary>
+    public FlashResult TwoPhasePHFlashSafe(double P, double[] z, double h, double tempGuess = 298.15)
+    {
+        return RunWithTimeout(() =>
+        {
+            lock (_lock)
+            {
+                CheckFaulted();
+                return PHFlashViaBrent(P, z, h, tempGuess);
+            }
+        }, "PHFlashSafe");
+    }
+
+    private FlashResult PSFlashViaBrent(double P, double[] z, double sTarget, double Tguess)
+    {
+        // Bracket: search a wide range around the guess
+        double Tlo = Math.Max(50.0, Tguess - 200.0);
+        double Thi = Tguess + 500.0;
+
+        double SFunc(double T)
+        {
+            try
+            {
+                var fl = TPFlashUnsafe(T, P, z);
+                // Phase < 0 means solver failed (continueOnError returns phase=-1)
+                if (fl.Phase < 0 || double.IsNaN(fl.BetaV)) return double.NaN;
+                return MixEntropy(T, P, fl, z) - sTarget;
+            }
+            catch { return double.NaN; }
         }
+
+        double Tsol = BrentSolve(SFunc, Tlo, Thi, 1e-6, 80);
+        return TPFlashUnsafe(Tsol, P, z);
+    }
+
+    private FlashResult PHFlashViaBrent(double P, double[] z, double hTarget, double Tguess)
+    {
+        double Tlo = Math.Max(50.0, Tguess - 200.0);
+        double Thi = Tguess + 500.0;
+
+        double HFunc(double T)
+        {
+            try
+            {
+                var fl = TPFlashUnsafe(T, P, z);
+                if (fl.Phase < 0 || double.IsNaN(fl.BetaV)) return double.NaN;
+                return MixEnthalpy(T, P, fl, z) - hTarget;
+            }
+            catch { return double.NaN; }
+        }
+
+        double Tsol = BrentSolve(HFunc, Tlo, Thi, 1e-6, 80);
+        return TPFlashUnsafe(Tsol, P, z);
+    }
+
+    /// <summary>Compute mixture entropy from a flash result. Caller must hold _lock.</summary>
+    private double MixEntropy(double T, double P, FlashResult fl, double[] z)
+    {
+        Activate();
+        double sMix = 0;
+        if (fl.BetaV > 1e-12 && fl.Y != null && ArraySumAbs(fl.Y) > 1e-30)
+        {
+            double sv = 0; int flag = 0; int phase = _VAPPH;
+            SafeCall(() => _entropy!(ref T, ref P, fl.Y, ref phase, ref sv,
+                IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, ref flag), "Entropy");
+            sMix += fl.BetaV * sv;
+        }
+        if (fl.BetaL > 1e-12 && fl.X != null && ArraySumAbs(fl.X) > 1e-30)
+        {
+            double sl = 0; int flag = 0; int phase = _LIQPH;
+            SafeCall(() => _entropy!(ref T, ref P, fl.X, ref phase, ref sl,
+                IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, ref flag), "Entropy");
+            sMix += fl.BetaL * sl;
+        }
+        if (fl.BetaV <= 1e-12 && fl.BetaL <= 1e-12)
+        {
+            // Single-phase fallback: use feed
+            double ss = 0; int flag = 0; int phase = _VAPPH;
+            SafeCall(() => _entropy!(ref T, ref P, z, ref phase, ref ss,
+                IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, ref flag), "Entropy");
+            sMix = ss;
+        }
+        return sMix;
+    }
+
+    /// <summary>Compute mixture enthalpy from a flash result. Caller must hold _lock.</summary>
+    private double MixEnthalpy(double T, double P, FlashResult fl, double[] z)
+    {
+        Activate();
+        double hMix = 0;
+        if (fl.BetaV > 1e-12 && fl.Y != null && ArraySumAbs(fl.Y) > 1e-30)
+        {
+            double hv = 0; int flag = 0; int phase = _VAPPH;
+            SafeCall(() => _enthalpy!(ref T, ref P, fl.Y, ref phase, ref hv,
+                IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, ref flag), "Enthalpy");
+            hMix += fl.BetaV * hv;
+        }
+        if (fl.BetaL > 1e-12 && fl.X != null && ArraySumAbs(fl.X) > 1e-30)
+        {
+            double hl = 0; int flag = 0; int phase = _LIQPH;
+            SafeCall(() => _enthalpy!(ref T, ref P, fl.X, ref phase, ref hl,
+                IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, ref flag), "Enthalpy");
+            hMix += fl.BetaL * hl;
+        }
+        if (fl.BetaV <= 1e-12 && fl.BetaL <= 1e-12)
+        {
+            double hs = 0; int flag = 0; int phase = _VAPPH;
+            SafeCall(() => _enthalpy!(ref T, ref P, z, ref phase, ref hs,
+                IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, ref flag), "Enthalpy");
+            hMix = hs;
+        }
+        return hMix;
+    }
+
+    private static double ArraySumAbs(double[] arr)
+    {
+        double s = 0;
+        for (int i = 0; i < arr.Length; i++) s += Math.Abs(arr[i]);
+        return s;
     }
 
     // ─── Saturation points ────────────────────────────────────────────
@@ -738,7 +910,49 @@ public class ThermoPackEngine : IDisposable
     }
 
     /// <summary>
+    /// Configure Fortran error handling to prevent process termination.
+    /// Sets thermopack_constants::continueOnError = .true. so that solvers
+    /// return error codes instead of calling stoperror() → exit(1).
+    /// Sets error::dostop = .false. as a safety net so that any stoperror()
+    /// call that IS reached won't terminate the host process.
+    /// These are the same flags used by thermopack's own unit tests.
+    /// </summary>
+    private void ConfigureErrorHandling()
+    {
+        if (_errorHandlingConfigured) return;
+        lock (_lock)
+        {
+            if (_errorHandlingConfigured) return;
+
+            // Set continueOnError = .true. in thermopack_constants module.
+            // This makes solvers (TP, PS, PH, density solver, etc.) return
+            // with error indicators instead of calling exit().
+            try
+            {
+                var ptr = _lib.GetModuleVariableAddress("thermopack_constants", "continueonerror");
+                if (ptr != IntPtr.Zero)
+                    Marshal.WriteInt32(ptr, _trueInt);
+            }
+            catch { /* Symbol may not exist in some builds */ }
+
+            // Set dostop = .false. in error module.
+            // Safety net: if stoperror() IS reached, it won't call exit().
+            try
+            {
+                var ptr = _lib.GetModuleVariableAddress("error", "dostop");
+                if (ptr != IntPtr.Zero)
+                    Marshal.WriteInt32(ptr, 0); // .false. = 0 for both gfortran and ifort
+            }
+            catch { }
+
+            _errorHandlingConfigured = true;
+        }
+    }
+
+    /// <summary>
     /// Brent's method for root finding. Finds x such that f(x) = 0 in [a, b].
+    /// Handles NaN function values (from failed Fortran calls) by falling back
+    /// to bisection away from the problematic point.
     /// </summary>
     private static double BrentSolve(Func<double, double> f, double a, double b,
         double tol, int maxIter)
@@ -746,9 +960,18 @@ public class ThermoPackEngine : IDisposable
         double fa = f(a);
         double fb = f(b);
 
+        // If endpoints failed (NaN), try to shrink bracket to find valid points
+        if (double.IsNaN(fa) || double.IsNaN(fb))
+        {
+            if (!TryFindBracket(f, ref a, ref b, ref fa, ref fb, 10))
+                throw new InvalidOperationException(
+                    "PS/PH flash: cannot find valid bracket — " +
+                    "Fortran solver fails at all sampled temperatures.");
+        }
+
         if (fa * fb > 0)
         {
-            // Try to proceed anyway; use midpoint as fallback
+            // No sign change — use midpoint as fallback
             return (a + b) / 2.0;
         }
 
@@ -815,9 +1038,109 @@ public class ThermoPackEngine : IDisposable
                 b += (m > 0 ? tol1 : -tol1);
 
             fb = f(b);
+
+            // If function evaluation failed (NaN), bisect toward the valid side
+            if (double.IsNaN(fb))
+            {
+                b = 0.5 * (a + c);
+                fb = f(b);
+                if (double.IsNaN(fb))
+                {
+                    // Both sides failing — return best known point
+                    return a;
+                }
+                d = b - a; e = d;
+            }
         }
 
         return b;
+    }
+
+    /// <summary>
+    /// Try to find a valid bracket [a,b] where f(a) and f(b) have opposite signs
+    /// and neither is NaN. Samples points within the original interval.
+    /// </summary>
+    private static bool TryFindBracket(Func<double, double> f,
+        ref double a, ref double b, ref double fa, ref double fb, int nSamples)
+    {
+        double origA = a, origB = b;
+        var points = new List<(double x, double fx)>();
+
+        // Sample uniformly across the interval
+        for (int i = 0; i <= nSamples; i++)
+        {
+            double x = origA + (origB - origA) * i / nSamples;
+            double fx = f(x);
+            if (!double.IsNaN(fx) && !double.IsInfinity(fx))
+                points.Add((x, fx));
+        }
+
+        if (points.Count < 2) return false;
+
+        // Find a pair with opposite signs (largest interval preferred)
+        for (int i = 0; i < points.Count - 1; i++)
+        {
+            for (int j = points.Count - 1; j > i; j--)
+            {
+                if (points[i].fx * points[j].fx <= 0)
+                {
+                    a = points[i].x; fa = points[i].fx;
+                    b = points[j].x; fb = points[j].fx;
+                    return true;
+                }
+            }
+        }
+
+        // No sign change found — pick the closest-to-zero point
+        var best = points.OrderBy(p => Math.Abs(p.fx)).First();
+        a = best.x; fa = best.fx;
+        b = best.x; fb = best.fx;
+        return false;
+    }
+
+    // ─── Timeout protection ──────────────────────────────────────────
+
+    /// <summary>
+    /// Runs a flash calculation on a background thread with a timeout.
+    /// If the Fortran call hangs (e.g. density solver infinite loop),
+    /// the engine is marked as faulted after the timeout expires.
+    /// The background thread may leak, but the host process survives.
+    /// </summary>
+    private T RunWithTimeout<T>(Func<T> work, string operation)
+    {
+        if (FlashTimeoutMs <= 0)
+            return work();
+
+        T result = default!;
+        Exception? workerException = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                result = work();
+            }
+            catch (Exception ex)
+            {
+                workerException = ex;
+            }
+        });
+        thread.IsBackground = true;
+        thread.Start();
+
+        if (thread.Join(FlashTimeoutMs))
+        {
+            // Thread completed within timeout
+            if (workerException != null)
+                ExceptionDispatchInfo.Capture(workerException).Throw();
+            return result;
+        }
+
+        // Timeout expired — Fortran is stuck
+        _faulted = true;
+        throw new InvalidOperationException(
+            $"{operation} timed out after {FlashTimeoutMs}ms. " +
+            "The Fortran solver appears to be stuck. " +
+            "The engine is no longer usable — re-initialize the property package to recover.");
     }
 
     // ─── Fortran crash protection ────────────────────────────────────

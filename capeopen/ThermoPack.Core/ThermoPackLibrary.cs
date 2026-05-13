@@ -120,6 +120,30 @@ public class ThermoPackLibrary : IDisposable
     }
 
     /// <summary>
+    /// Resolves the address of a module-level Fortran variable.
+    /// Module variables may have a different postfix convention than functions
+    /// (e.g. ifort uses trailing '_' for functions but not for variables).
+    /// Returns IntPtr.Zero if the symbol is not found.
+    /// </summary>
+    public IntPtr GetModuleVariableAddress(string module, string variable)
+    {
+        // Try standard module mangling first (same as functions — works for gfortran)
+        var name = _prefix + module + _module + variable + _postfix;
+        var ptr = ResolveSymbol(name);
+        if (ptr != IntPtr.Zero) return ptr;
+
+        // Try without postfix (ifort: variables don't have trailing '_')
+        if (_postfix.Length > 0)
+        {
+            name = _prefix + module + _module + variable;
+            ptr = ResolveSymbol(name);
+            if (ptr != IntPtr.Zero) return ptr;
+        }
+
+        return IntPtr.Zero;
+    }
+
+    /// <summary>
     /// Gets a delegate for a C-bound function.
     /// </summary>
     public T GetCDelegate<T>(string name) where T : Delegate

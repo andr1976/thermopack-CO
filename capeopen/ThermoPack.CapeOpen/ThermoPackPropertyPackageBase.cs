@@ -397,12 +397,12 @@ public abstract class ThermoPackPropertyPackageBase :
                 result = _engine!.TwoPhaseTPFlash(T, P, feed);
                 break;
             case FlashType.PH:
-                Log($"[{PackageName}] Calling TwoPhasePHFlash(P={P:F0}, h={targetValue:G6}, Tguess={T:F2})...");
-                result = _engine!.TwoPhasePHFlash(P, feed, targetValue, T);
+                Log($"[{PackageName}] Calling TwoPhasePHFlashSafe(P={P:F0}, h={targetValue:G6}, Tguess={T:F2})...");
+                result = _engine!.TwoPhasePHFlashSafe(P, feed, targetValue, T);
                 break;
             case FlashType.PS:
-                Log($"[{PackageName}] Calling TwoPhasePSFlash(P={P:F0}, s={targetValue:G6}, Tguess={T:F2})...");
-                result = _engine!.TwoPhasePSFlash(P, feed, targetValue, T);
+                Log($"[{PackageName}] Calling TwoPhasePSFlashSafe(P={P:F0}, s={targetValue:G6}, Tguess={T:F2})...");
+                result = _engine!.TwoPhasePSFlashSafe(P, feed, targetValue, T);
                 break;
             case FlashType.UV:
             {
@@ -1546,9 +1546,13 @@ public abstract class ThermoPackPropertyPackageBase :
         var feed = new double[nc];
         double sum = 0;
         int len = Math.Min(raw.Length, nc);
-        for (int i = 0; i < len; i++) sum += raw[i];
+        for (int i = 0; i < len; i++)
+        {
+            feed[i] = raw[i];
+            sum += raw[i];
+        }
         if (sum < 1e-30) return feed;
-        for (int i = 0; i < len; i++) feed[i] = raw[i] / sum;
+        for (int i = 0; i < len; i++) feed[i] /= sum;
         return feed;
     }
 
