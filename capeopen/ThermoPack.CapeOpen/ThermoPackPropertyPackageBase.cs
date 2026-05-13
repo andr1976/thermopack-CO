@@ -63,6 +63,30 @@ public abstract class ThermoPackPropertyPackageBase :
     // COM object references (must be released via Marshal.ReleaseComObject)
     private object? _simulationContext;
 
+    // Re-entrancy protection (COFE can recurse into CalcEquilibrium)
+    private bool _inCalcEquilibrium;
+
+    // ECapeUser error information — COFE queries these properties via COM IDispatch
+    // after receiving a COMException. Pattern matches thermocalc reference implementation.
+    public string name { get; set; } = "";
+    public string description { get; set; } = "";
+    public string source { get; set; } = "ThermoPack Property Package";
+    public string scope { get; set; } = "Calculation";
+    public string interfaceName { get; set; } = "";
+    public string operationName { get; set; } = "";
+    public string moreInfo { get; set; } = "";
+
+    private void SetError(string desc, string op, string intf, int hr,
+        string errName = "ThermoPack Error")
+    {
+        description = desc;
+        operationName = op;
+        interfaceName = intf;
+        name = errName;
+        moreInfo = desc;
+        Log($"CAPE-OPEN Error (0x{hr:X8}): {desc}");
+    }
+
     // Flash cache
     private FlashResult? _lastResult;
     private double _lastT;
@@ -135,7 +159,7 @@ public abstract class ThermoPackPropertyPackageBase :
         {
             return phaseLabel == PhaseVapour ? "Vapor" : "Liquid";
         }
-        throw new COMException($"Unknown phase attribute: {phaseAttribute}");
+        throw new COMException($"Unknown phase attribute: {phaseAttribute}", ECapeUnknown);
     }
 
     // ─── ICapeThermoCompounds ─────────────────────────────────────────
@@ -244,7 +268,7 @@ public abstract class ThermoPackPropertyPackageBase :
     public void GetPDependentProperty(object props, double pressure, object compIds,
         ref object propVals)
     {
-        throw new COMException("P-dependent properties not supported");
+        throw new COMException("P-dependent properties not supported", ECapeNoImpl);
     }
 
     public void GetTDependentProperty(object props, double temperature, object compIds,
@@ -292,11 +316,24 @@ public abstract class ThermoPackPropertyPackageBase :
     public void CalcEquilibrium(object specification1, object specification2,
         string solutionType)
     {
-        if (_material == null) return;
+        if (_material == null)
+        {
+            Log("CalcEquilibrium SKIPPED: _material is null");
+            return;
+        }
+        if (_inCalcEquilibrium)
+        {
+            Log("CalcEquilibrium SKIPPED: re-entrant call blocked");
+            return;
+        }
         if (_selectedComponents.Count == 0)
-            throw new COMException("No compounds configured. Use Edit() to select compounds first.",
-                ECapeCalculation);
+        {
+            var msg = "No compounds configured. Use Edit() to select compounds first.";
+            SetError(msg, "CalcEquilibrium", "ICapeThermoEquilibriumRoutine", ECapeUnknown);
+            throw new COMException(msg, ECapeUnknown);
+        }
 
+        _inCalcEquilibrium = true;
         try
         {
             CalcEquilibriumCore(specification1, specification2);
@@ -307,7 +344,15 @@ public abstract class ThermoPackPropertyPackageBase :
         }
         catch (Exception ex)
         {
-            throw new COMException($"CalcEquilibrium failed: {ex.Message}", ECapeCalculation);
+            var detail = $"CalcEquilibrium failed: {ex.Message}";
+            Log(detail);
+            Log($"  StackTrace: {ex.StackTrace}");
+            SetError(detail, "CalcEquilibrium", "ICapeThermoEquilibriumRoutine", ECapeUnknown);
+            throw new COMException(detail, ECapeUnknown);
+        }
+        finally
+        {
+            _inCalcEquilibrium = false;
         }
     }
 
@@ -472,9 +517,21 @@ public abstract class ThermoPackPropertyPackageBase :
 
             foreach (var prop in propNames)
             {
-                double[] values = GetSinglePhasePropertyValues(prop, phaseLabel, wrapper);
-                string basis = GetPropertyBasis(prop);
-                wrapper.SetSinglePhaseProp(prop, phaseLabel, basis, values);
+                try
+                {
+                    double[] values = GetSinglePhasePropertyValues(prop, phaseLabel, wrapper);
+                    string basis = GetPropertyBasis(prop);
+                    wrapper.SetSinglePhaseProp(prop, phaseLabel, basis, values);
+                }
+                catch (Exception ex)
+                {
+                    Log($"CalcSinglePhaseProp: property {prop} failed for {phaseLabel}: {ex.Message}");
+                    SetError($"Property {prop} failed for {phaseLabel}: {ex.Message}",
+                        "CalcSinglePhaseProp", "ICapeThermoPropertyRoutine", ECapeUnknown);
+                    throw new COMException(
+                        $"Property {prop} failed for {phaseLabel}: {ex.Message}",
+                        ECapeUnknown);
+                }
             }
         }
         catch (COMException)
@@ -484,9 +541,11 @@ public abstract class ThermoPackPropertyPackageBase :
         catch (Exception ex)
         {
             Log($"CalcSinglePhaseProp FAILED for phase {phaseLabel}: {ex.Message}");
+            SetError($"CalcSinglePhaseProp failed for phase {phaseLabel}: {ex.Message}",
+                "CalcSinglePhaseProp", "ICapeThermoPropertyRoutine", ECapeUnknown);
             throw new COMException(
                 $"CalcSinglePhaseProp failed for phase {phaseLabel}: {ex.Message}",
-                ECapeCalculation);
+                ECapeUnknown);
         }
     }
 
@@ -575,10 +634,10 @@ public abstract class ThermoPackPropertyPackageBase :
         ref object lnPhiDP, ref object lnPhiDn)
     {
         if (_selectedComponents.Count == 0)
-            throw new COMException("No compounds configured.");
+            throw new COMException("No compounds configured.", ECapeUnknown);
 
         EnsureInitialized();
-        if (_engine == null) throw new COMException("Engine not initialized.");
+        if (_engine == null) throw new COMException("Engine not initialized.", ECapeUnknown);
 
         var moles = (double[])moleNumbers;
         int nc = _selectedComponents.Count;
@@ -995,11 +1054,11 @@ public abstract class ThermoPackPropertyPackageBase :
     {
         if (_engine != null) return;
         if (_initError != null)
-            throw new COMException(_initError, ECapeCalculation);
+            throw new COMException(_initError, ECapeUnknown);
         EnsureStaticInit();
         RecreateEngine();
         if (_initError != null)
-            throw new COMException(_initError, ECapeCalculation);
+            throw new COMException(_initError, ECapeUnknown);
     }
 
     private void RecreateEngine()
@@ -1019,9 +1078,22 @@ public abstract class ThermoPackPropertyPackageBase :
             return;
         }
 
-        _engine = new ThermoPackEngine(_sharedLib);
-        var compString = string.Join(",", _selectedComponents.Select(c => c.Ident));
-        InitializeEngine(_engine, compString);
+        try
+        {
+            _engine = new ThermoPackEngine(_sharedLib);
+            var compString = string.Join(",", _selectedComponents.Select(c => c.Ident));
+            InitializeEngine(_engine, compString);
+        }
+        catch (Exception ex)
+        {
+            // If Fortran library is faulted (stuck thread, access violation, etc.),
+            // the constructor/init will throw.  Store the error for later reporting
+            // instead of propagating — prevents COFE crash on re-initialization.
+            _engine?.Dispose();
+            _engine = null;
+            _initError = $"Engine initialization failed: {ex.Message}";
+            Log($"RecreateEngine FAILED: {ex.Message}");
+        }
     }
 
     /// <summary>
@@ -1096,7 +1168,7 @@ public abstract class ThermoPackPropertyPackageBase :
         MaterialObjectWrapper wrapper)
     {
         if (_engine == null || _lastResult == null)
-            throw new COMException("No flash result available");
+            throw new COMException("No flash result available", ECapeUnknown);
 
         int nc = _selectedComponents.Count;
         double T = _lastResult.Temperature;
@@ -1232,7 +1304,7 @@ public abstract class ThermoPackPropertyPackageBase :
                 return new[] { P };
 
             default:
-                throw new COMException($"Unsupported single-phase property: {prop}");
+                throw new COMException($"Unsupported single-phase property: {prop}", ECapeNoImpl);
         }
     }
 
@@ -1500,7 +1572,7 @@ public abstract class ThermoPackPropertyPackageBase :
         if (p1 == "phasefraction" && p2 == "temperature")
         { result.Type = FlashType.TVF; result.TargetProperty = s1.name; result.TargetBasis = s1.basis; result.TargetCalcType = s1.calcType; return result; }
 
-        throw new COMException($"Unsupported flash specification: {p1}/{p2}");
+        throw new COMException($"Unsupported flash specification: {p1}/{p2}", ECapeNoImpl);
     }
 
     // ─── Utility methods ──────────────────────────────────────────────
