@@ -1081,6 +1081,8 @@ public abstract class ThermoPackPropertyPackageBase :
         try
         {
             _engine = new ThermoPackEngine(_sharedLib);
+            if (ThermoPackEngine.ErrorHandlingDiagnostics != null)
+                Log($"RecreateEngine: errorHandling=[{ThermoPackEngine.ErrorHandlingDiagnostics}]");
             var compString = string.Join(",", _selectedComponents.Select(c => c.Ident));
             InitializeEngine(_engine, compString);
         }
