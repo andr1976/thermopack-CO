@@ -1038,13 +1038,16 @@ public abstract class ThermoPackPropertyPackageBase :
 
         if (rawSum < 1e-12)
         {
+            // Zero flow: use uniform composition to avoid passing all-zeros to Fortran
+            var uniform = new double[nc];
+            for (int i = 0; i < nc; i++) uniform[i] = 1.0 / nc;
             _lastResult = new FlashResult
             {
                 Temperature = T, Pressure = P,
                 BetaV = 0, BetaL = 1,
-                X = new double[nc], Y = new double[nc]
+                X = uniform, Y = (double[])uniform.Clone()
             };
-            _lastT = T; _lastP = P; _lastFeed = new double[nc];
+            _lastT = T; _lastP = P; _lastFeed = (double[])uniform.Clone();
             return;
         }
 
@@ -1057,11 +1060,14 @@ public abstract class ThermoPackPropertyPackageBase :
         catch
         {
             if (_lastResult != null && _lastResult.X.Length == nc) return;
+            // Use feed as composition fallback — never store all-zeros in X/Y
+            // as that can crash CPA's LAPACK solver if passed to Fortran.
+            var feedCopy = (double[])feed.Clone();
             _lastResult = new FlashResult
             {
                 Temperature = T, Pressure = P,
                 BetaV = 0, BetaL = 1,
-                X = new double[nc], Y = new double[nc]
+                X = feedCopy, Y = (double[])feedCopy.Clone()
             };
             _lastT = T; _lastP = P; _lastFeed = (double[])feed.Clone();
         }
@@ -1083,6 +1089,12 @@ public abstract class ThermoPackPropertyPackageBase :
             ? FitArray(_lastResult.Y, nc)
             : FitArray(_lastResult.X, nc);
         SanitizeAndNormalize(x);
+
+        // Guard: if composition is still all-zero after normalization (e.g. absent phase
+        // from a single-phase flash), use the feed composition.  Passing zeros to Fortran
+        // crashes CPA's LAPACK dsysv solver with an unrecoverable abort().
+        if (ArraySum(x) < 1e-30 && _lastFeed != null)
+            x = NormalizeFeed(_lastFeed, nc);
 
         switch (prop.ToLowerInvariant())
         {
@@ -1242,6 +1254,11 @@ public abstract class ThermoPackPropertyPackageBase :
         SanitizeAndNormalize(xLiq);
         SanitizeAndNormalize(yVap);
 
+        // Guard: if either phase composition is still all-zero, use feed.
+        // This prevents passing zeros to Fortran (crashes CPA's dsysv).
+        if (ArraySum(xLiq) < 1e-30) xLiq = NormalizeFeed(feed, nc);
+        if (ArraySum(yVap) < 1e-30) yVap = NormalizeFeed(feed, nc);
+
         // Compute overall fraction consistent with phase data: z_i = betaV*y_i + betaL*x_i
         // Then normalize to ensure it sums to exactly 1.0.
         var overallFraction = new double[nc];
@@ -1339,13 +1356,17 @@ public abstract class ThermoPackPropertyPackageBase :
         if (double.IsNaN(T) || T < 1.0) T = 298.15;
         if (double.IsNaN(P) || P < 1.0) P = 101325.0;
 
+        // Use uniform composition to avoid passing all-zeros to Fortran
+        var uniform = new double[nc];
+        for (int i = 0; i < nc; i++) uniform[i] = 1.0 / nc;
+
         _lastResult = new FlashResult
         {
             Temperature = T, Pressure = P,
             BetaV = 0, BetaL = 1,
-            X = new double[nc], Y = new double[nc]
+            X = uniform, Y = (double[])uniform.Clone()
         };
-        _lastT = T; _lastP = P; _lastFeed = new double[nc];
+        _lastT = T; _lastP = P; _lastFeed = (double[])uniform.Clone();
 
         wrapper.SetPresentPhases(new[] { PhaseLiquid }, new[] { CapeAtEquilibrium });
         wrapper.SetSinglePhaseProp("temperature", PhaseLiquid, "", new[] { T });

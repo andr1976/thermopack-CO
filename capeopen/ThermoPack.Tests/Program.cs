@@ -330,6 +330,8 @@ class Program
             Pass("InitCpa(C1,C2) rejected", ex.Message);
         }
 
+        AdvancedModelsValidation.Run(lib);
+
         lib.Dispose();
         Console.WriteLine();
     }
