@@ -1206,12 +1206,7 @@ public class ThermoPackEngine : IDisposable
     [DllImport("user32.dll")]
     private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
 
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-
     private const uint THREAD_SUSPEND_RESUME = 0x0002;
-    private const int SW_HIDE = 0;
 
     private static bool IsWindows => RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
 
@@ -1305,9 +1300,9 @@ public class ThermoPackEngine : IDisposable
         {
             reason = $"timed out after {FlashTimeoutMs}ms";
             // Timeout path: watcher may not have caught a dialog yet,
-            // do a final suspend + hide pass.
+            // do a final suspend pass.
             if (IsWindows && workerNativeThreadId != 0)
-                SuspendAndHide(workerNativeThreadId);
+                SuspendWorkerThread(workerNativeThreadId);
         }
 
         throw new InvalidOperationException(
@@ -1318,8 +1313,12 @@ public class ThermoPackEngine : IDisposable
 
     /// <summary>
     /// Check for an "Intel(r) Visual Fortran run-time error" dialog belonging
-    /// to this process.  If found, immediately suspend the worker thread and
-    /// hide the dialog window.  Returns true if the dialog was found.
+    /// to this process.  If found, immediately suspend the worker thread.
+    /// The dialog remains visible but frozen (unresponsive) — this is
+    /// intentional: the user cannot click OK, so ExitProcess() is never called.
+    /// We must NOT call ShowWindow/SendMessage on the dialog after suspending
+    /// its owning thread — those calls send synchronous messages that block
+    /// forever because the suspended thread cannot process them.
     /// </summary>
     private static bool DetectAndSuppressIntelDialog(uint pid, uint workerThreadId)
     {
@@ -1337,9 +1336,8 @@ public class ThermoPackEngine : IDisposable
                 if (title.IndexOf("Intel", StringComparison.OrdinalIgnoreCase) >= 0 &&
                     title.IndexOf("Fortran", StringComparison.OrdinalIgnoreCase) >= 0)
                 {
-                    // Found the Intel dialog — suspend the worker thread FIRST
-                    // (before the user or OS can click OK → ExitProcess).
-                    SuspendAndHide(workerThreadId);
+                    // Suspend the worker thread to prevent ExitProcess()
+                    SuspendWorkerThread(workerThreadId);
                     found = true;
                     return false; // stop enumeration
                 }
@@ -1351,44 +1349,20 @@ public class ThermoPackEngine : IDisposable
     }
 
     /// <summary>
-    /// Suspend a native thread and hide any Intel Fortran dialog windows.
+    /// Suspend a native thread. The thread is leaked (suspended forever)
+    /// but the host process survives.
     /// </summary>
-    private static void SuspendAndHide(uint nativeThreadId)
+    private static void SuspendWorkerThread(uint nativeThreadId)
     {
-        // Suspend the worker thread to prevent ExitProcess()
         try
         {
-            if (nativeThreadId != 0)
+            if (nativeThreadId == 0) return;
+            IntPtr hThread = OpenThread(THREAD_SUSPEND_RESUME, false, nativeThreadId);
+            if (hThread != IntPtr.Zero)
             {
-                IntPtr hThread = OpenThread(THREAD_SUSPEND_RESUME, false, nativeThreadId);
-                if (hThread != IntPtr.Zero)
-                {
-                    SuspendThread(hThread);
-                    CloseHandle(hThread);
-                }
+                SuspendThread(hThread);
+                CloseHandle(hThread);
             }
-        }
-        catch { }
-
-        // Hide all Intel Fortran dialog windows in this process
-        try
-        {
-            uint pid = (uint)Process.GetCurrentProcess().Id;
-            EnumWindows((hWnd, _) =>
-            {
-                GetWindowThreadProcessId(hWnd, out uint windowPid);
-                if (windowPid != pid) return true;
-
-                var sb = new StringBuilder(256);
-                GetWindowText(hWnd, sb, sb.Capacity);
-                string title = sb.ToString();
-                if (title.IndexOf("Intel", StringComparison.OrdinalIgnoreCase) >= 0 &&
-                    title.IndexOf("Fortran", StringComparison.OrdinalIgnoreCase) >= 0)
-                {
-                    ShowWindow(hWnd, SW_HIDE);
-                }
-                return true;
-            }, IntPtr.Zero);
         }
         catch { }
     }
