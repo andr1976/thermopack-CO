@@ -1,4 +1,6 @@
+using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
+using System.Security;
 using System.Text;
 using ThermoPack.Core.Models;
 
@@ -14,6 +16,7 @@ public class ThermoPackEngine : IDisposable
     private int _modelIndex;
     private int _nc;
     private bool _disposed;
+    private bool _faulted;
 
     // Thread safety: Fortran global state is not thread-safe
     private static readonly object _lock = new();
@@ -98,6 +101,7 @@ public class ThermoPackEngine : IDisposable
     {
         lock (_lock)
         {
+            CheckFaulted();
             Activate();
             var compsB = ToFortranString(comps);
             var eosB = ToFortranString(eos);
@@ -106,9 +110,9 @@ public class ThermoPackEngine : IDisposable
             var paramRefB = ToFortranString(paramRef);
             int vs = volShift ? _trueInt : 0;
 
-            _initCubic!(compsB, eosB, mixingB, alphaB, paramRefB, ref vs,
+            SafeCall(() => _initCubic!(compsB, eosB, mixingB, alphaB, paramRefB, ref vs,
                 (UIntPtr)comps.Length, (UIntPtr)eos.Length, (UIntPtr)mixing.Length,
-                (UIntPtr)alpha.Length, (UIntPtr)paramRef.Length);
+                (UIntPtr)alpha.Length, (UIntPtr)paramRef.Length), "InitCubic");
 
             _nc = CountComponents(comps);
         }
@@ -118,13 +122,14 @@ public class ThermoPackEngine : IDisposable
     {
         lock (_lock)
         {
+            CheckFaulted();
             Activate();
             var compsB = ToFortranString(comps);
             var mixingB = ToFortranString(mixing);
             var paramRefB = ToFortranString(paramRef);
 
-            _initTcPR!(compsB, mixingB, paramRefB,
-                (UIntPtr)comps.Length, (UIntPtr)mixing.Length, (UIntPtr)paramRef.Length);
+            SafeCall(() => _initTcPR!(compsB, mixingB, paramRefB,
+                (UIntPtr)comps.Length, (UIntPtr)mixing.Length, (UIntPtr)paramRef.Length), "InitTcPR");
 
             _nc = CountComponents(comps);
         }
@@ -135,6 +140,7 @@ public class ThermoPackEngine : IDisposable
     {
         lock (_lock)
         {
+            CheckFaulted();
             Activate();
             var compsB = ToFortranString(comps);
             var eosB = ToFortranString(eos);
@@ -142,9 +148,9 @@ public class ThermoPackEngine : IDisposable
             var alphaB = ToFortranString(alpha);
             var paramRefB = ToFortranString(paramRef);
 
-            _initCpa!(compsB, eosB, mixingB, alphaB, paramRefB,
+            SafeCall(() => _initCpa!(compsB, eosB, mixingB, alphaB, paramRefB,
                 (UIntPtr)comps.Length, (UIntPtr)eos.Length, (UIntPtr)mixing.Length,
-                (UIntPtr)alpha.Length, (UIntPtr)paramRef.Length);
+                (UIntPtr)alpha.Length, (UIntPtr)paramRef.Length), "InitCpa");
 
             _nc = CountComponents(comps);
         }
@@ -155,14 +161,15 @@ public class ThermoPackEngine : IDisposable
     {
         lock (_lock)
         {
+            CheckFaulted();
             Activate();
             var compsB = ToFortranString(comps);
             var paramRefB = ToFortranString(paramRef);
             int simplifiedInt = simplified ? _trueInt : 0;
             int polarInt = polar ? _trueInt : 0;
 
-            _initPcSaft!(compsB, paramRefB, ref simplifiedInt, ref polarInt,
-                (UIntPtr)comps.Length, (UIntPtr)paramRef.Length);
+            SafeCall(() => _initPcSaft!(compsB, paramRefB, ref simplifiedInt, ref polarInt,
+                (UIntPtr)comps.Length, (UIntPtr)paramRef.Length), "InitPcSaft");
 
             _nc = CountComponents(comps);
         }
@@ -173,13 +180,14 @@ public class ThermoPackEngine : IDisposable
     {
         lock (_lock)
         {
+            CheckFaulted();
             Activate();
             var compsB = ToFortranString(comps);
             var meosB = ToFortranString(meos);
             var refStateB = ToFortranString(refState);
 
-            _initMultiparameter!(compsB, meosB, refStateB,
-                (UIntPtr)comps.Length, (UIntPtr)meos.Length, (UIntPtr)refState.Length);
+            SafeCall(() => _initMultiparameter!(compsB, meosB, refStateB,
+                (UIntPtr)comps.Length, (UIntPtr)meos.Length, (UIntPtr)refState.Length), "InitMultiparameter");
 
             _nc = CountComponents(comps);
         }
@@ -191,6 +199,7 @@ public class ThermoPackEngine : IDisposable
     {
         lock (_lock)
         {
+            CheckFaulted();
             return TPFlashUnsafe(T, P, z);
         }
     }
@@ -204,7 +213,7 @@ public class ThermoPackEngine : IDisposable
         var x = new double[_nc];
         var y = new double[_nc];
 
-        _tpFlash!(ref T, ref P, z, ref betaV, ref betaL, ref phase, x, y);
+        SafeCall(() => _tpFlash!(ref T, ref P, z, ref betaV, ref betaL, ref phase, x, y), "TPFlash");
 
         return new FlashResult
         {
@@ -218,6 +227,7 @@ public class ThermoPackEngine : IDisposable
     {
         lock (_lock)
         {
+            CheckFaulted();
             Activate();
             double T = tempGuess;
             double betaV = 0, betaL = 0;
@@ -225,7 +235,7 @@ public class ThermoPackEngine : IDisposable
             var x = new double[_nc];
             var y = new double[_nc];
 
-            _phFlash!(ref T, ref P, z, ref betaV, ref betaL, x, y, ref h, ref phase, ref ierr);
+            SafeCall(() => _phFlash!(ref T, ref P, z, ref betaV, ref betaL, x, y, ref h, ref phase, ref ierr), "PHFlash");
 
             if (ierr != 0)
                 throw new InvalidOperationException(
@@ -245,6 +255,7 @@ public class ThermoPackEngine : IDisposable
     {
         lock (_lock)
         {
+            CheckFaulted();
             Activate();
             double T = tempGuess;
             double betaV = 0, betaL = 0;
@@ -252,7 +263,7 @@ public class ThermoPackEngine : IDisposable
             var x = new double[_nc];
             var y = new double[_nc];
 
-            _psFlash!(ref T, ref P, z, ref betaV, ref betaL, x, y, ref s, ref phase, ref ierr);
+            SafeCall(() => _psFlash!(ref T, ref P, z, ref betaV, ref betaL, x, y, ref s, ref phase, ref ierr), "PSFlash");
 
             if (ierr != 0)
                 throw new InvalidOperationException(
@@ -273,6 +284,7 @@ public class ThermoPackEngine : IDisposable
     {
         lock (_lock)
         {
+            CheckFaulted();
             Activate();
             double T = tempGuess, P = pressGuess;
             double betaV = 0, betaL = 0;
@@ -280,7 +292,7 @@ public class ThermoPackEngine : IDisposable
             var x = new double[_nc];
             var y = new double[_nc];
 
-            _uvFlash!(ref T, ref P, z, ref betaV, ref betaL, x, y, ref u, ref v, ref phase);
+            SafeCall(() => _uvFlash!(ref T, ref P, z, ref betaV, ref betaL, x, y, ref u, ref v, ref phase), "UVFlash");
 
             return new FlashResult
             {
@@ -295,22 +307,22 @@ public class ThermoPackEngine : IDisposable
 
     public (double T, double[] y) BubbleTemperature(double P, double[] z)
     {
-        lock (_lock) { return BubbleTemperatureUnsafe(P, z); }
+        lock (_lock) { CheckFaulted(); return BubbleTemperatureUnsafe(P, z); }
     }
 
     public (double P, double[] y) BubblePressure(double T, double[] z)
     {
-        lock (_lock) { return BubblePressureUnsafe(T, z); }
+        lock (_lock) { CheckFaulted(); return BubblePressureUnsafe(T, z); }
     }
 
     public (double T, double[] x) DewTemperature(double P, double[] z)
     {
-        lock (_lock) { return DewTemperatureUnsafe(P, z); }
+        lock (_lock) { CheckFaulted(); return DewTemperatureUnsafe(P, z); }
     }
 
     public (double P, double[] x) DewPressure(double T, double[] z)
     {
-        lock (_lock) { return DewPressureUnsafe(T, z); }
+        lock (_lock) { CheckFaulted(); return DewPressureUnsafe(T, z); }
     }
 
     private (double T, double[] y) BubbleTemperatureUnsafe(double P, double[] z)
@@ -318,7 +330,7 @@ public class ThermoPackEngine : IDisposable
         Activate();
         var y = new double[_nc];
         int ierr = 0;
-        double T = _safeBubT!(ref P, z, y, ref ierr);
+        double T = SafeCall(() => _safeBubT!(ref P, z, y, ref ierr), "BubbleTemperature");
         if (ierr != 0)
             throw new InvalidOperationException($"BubbleTemperature failed (ierr={ierr})");
         return (T, y);
@@ -329,7 +341,7 @@ public class ThermoPackEngine : IDisposable
         Activate();
         var y = new double[_nc];
         int ierr = 0;
-        double P = _safeBubP!(ref T, z, y, ref ierr);
+        double P = SafeCall(() => _safeBubP!(ref T, z, y, ref ierr), "BubblePressure");
         if (ierr != 0)
             throw new InvalidOperationException($"BubblePressure failed (ierr={ierr})");
         return (P, y);
@@ -341,7 +353,7 @@ public class ThermoPackEngine : IDisposable
         var x = new double[_nc];
         int ierr = 0;
         // Fortran safe_dewT(P, X_output, Y_input, ierr): output array first, input array second
-        double T = _safeDewT!(ref P, x, z, ref ierr);
+        double T = SafeCall(() => _safeDewT!(ref P, x, z, ref ierr), "DewTemperature");
         if (ierr != 0)
             throw new InvalidOperationException($"DewTemperature failed (ierr={ierr})");
         return (T, x);
@@ -353,7 +365,7 @@ public class ThermoPackEngine : IDisposable
         var x = new double[_nc];
         int ierr = 0;
         // Fortran safe_dewP(T, X_output, Y_input, ierr): output array first, input array second
-        double P = _safeDewP!(ref T, x, z, ref ierr);
+        double P = SafeCall(() => _safeDewP!(ref T, x, z, ref ierr), "DewPressure");
         if (ierr != 0)
             throw new InvalidOperationException($"DewPressure failed (ierr={ierr})");
         return (P, x);
@@ -445,11 +457,12 @@ public class ThermoPackEngine : IDisposable
     {
         lock (_lock)
         {
+            CheckFaulted();
             Activate();
             double h = 0;
-            int flag = 0; // residual=false → full enthalpy (ideal + residual)
-            _enthalpy!(ref T, ref P, x, ref phase, ref h,
-                IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, ref flag);
+            int flag = 0;
+            SafeCall(() => _enthalpy!(ref T, ref P, x, ref phase, ref h,
+                IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, ref flag), "Enthalpy");
             return h;
         }
     }
@@ -458,11 +471,12 @@ public class ThermoPackEngine : IDisposable
     {
         lock (_lock)
         {
+            CheckFaulted();
             Activate();
             double h = 0, dhdt = 0;
-            int flag = 0; // residual=false → full enthalpy
-            _enthalpyWithDhdt!(ref T, ref P, x, ref phase, ref h, ref dhdt,
-                IntPtr.Zero, IntPtr.Zero, ref flag);
+            int flag = 0;
+            SafeCall(() => _enthalpyWithDhdt!(ref T, ref P, x, ref phase, ref h, ref dhdt,
+                IntPtr.Zero, IntPtr.Zero, ref flag), "EnthalpyWithCp");
             return (h, dhdt);
         }
     }
@@ -471,11 +485,12 @@ public class ThermoPackEngine : IDisposable
     {
         lock (_lock)
         {
+            CheckFaulted();
             Activate();
             double s = 0;
-            int flag = 0; // residual=false → full entropy (ideal + residual)
-            _entropy!(ref T, ref P, x, ref phase, ref s,
-                IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, ref flag);
+            int flag = 0;
+            SafeCall(() => _entropy!(ref T, ref P, x, ref phase, ref s,
+                IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, ref flag), "Entropy");
             return s;
         }
     }
@@ -484,10 +499,11 @@ public class ThermoPackEngine : IDisposable
     {
         lock (_lock)
         {
+            CheckFaulted();
             Activate();
             double v = 0;
-            _specificVolume!(ref T, ref P, x, ref phase, ref v,
-                IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
+            SafeCall(() => _specificVolume!(ref T, ref P, x, ref phase, ref v,
+                IntPtr.Zero, IntPtr.Zero, IntPtr.Zero), "SpecificVolume");
             return v;
         }
     }
@@ -496,13 +512,14 @@ public class ThermoPackEngine : IDisposable
     {
         lock (_lock)
         {
+            CheckFaulted();
             Activate();
             var lnfug = new double[_nc];
             int ophase = 0, meta = 0;
             double v = 0;
-            _thermo!(ref T, ref P, x, ref phase, lnfug,
+            SafeCall(() => _thermo!(ref T, ref P, x, ref phase, lnfug,
                 IntPtr.Zero, IntPtr.Zero, IntPtr.Zero,
-                ref ophase, ref meta, ref v);
+                ref ophase, ref meta, ref v), "LnFugacityCoefficients");
             return lnfug;
         }
     }
@@ -511,10 +528,11 @@ public class ThermoPackEngine : IDisposable
     {
         lock (_lock)
         {
+            CheckFaulted();
             Activate();
             double z = 0;
-            _zfac!(ref T, ref P, x, ref phase, ref z,
-                IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
+            SafeCall(() => _zfac!(ref T, ref P, x, ref phase, ref z,
+                IntPtr.Zero, IntPtr.Zero, IntPtr.Zero), "ZFac");
             return z;
         }
     }
@@ -523,9 +541,10 @@ public class ThermoPackEngine : IDisposable
     {
         lock (_lock)
         {
+            CheckFaulted();
             Activate();
-            int j = index; // 1-based Fortran index
-            return _compMoleWeight!(ref j);
+            int j = index;
+            return SafeCall(() => _compMoleWeight!(ref j), "CompMoleWeight");
         }
     }
 
@@ -533,10 +552,11 @@ public class ThermoPackEngine : IDisposable
     {
         lock (_lock)
         {
+            CheckFaulted();
             Activate();
             int i = index;
             double tc = 0, pc = 0, omega = 0, vc = 0, tnb = 0;
-            _getCriticalParam!(ref i, ref tc, ref pc, ref omega, ref vc, ref tnb);
+            SafeCall(() => _getCriticalParam!(ref i, ref tc, ref pc, ref omega, ref vc, ref tnb), "GetCriticalParam");
             return (tc, pc, omega, vc, tnb);
         }
     }
@@ -545,8 +565,9 @@ public class ThermoPackEngine : IDisposable
     {
         lock (_lock)
         {
+            CheckFaulted();
             Activate();
-            return _getRgas!();
+            return SafeCall(() => _getRgas!(), "GetRgas");
         }
     }
 
@@ -554,9 +575,10 @@ public class ThermoPackEngine : IDisposable
     {
         lock (_lock)
         {
+            CheckFaulted();
             Activate();
             double hId = 0;
-            _idealEnthalpySingle!(ref T, ref compIdx, ref hId, IntPtr.Zero);
+            SafeCall(() => _idealEnthalpySingle!(ref T, ref compIdx, ref hId, IntPtr.Zero), "IdealEnthalpySingle");
             return hId;
         }
     }
@@ -577,9 +599,10 @@ public class ThermoPackEngine : IDisposable
         if (_guessPhase == null) return _VAPPH; // fallback
         lock (_lock)
         {
+            CheckFaulted();
             Activate();
             int phase = 0;
-            _guessPhase(ref T, ref P, z, ref phase);
+            SafeCall(() => _guessPhase(ref T, ref P, z, ref phase), "GuessPhase");
             return phase;
         }
     }
@@ -797,12 +820,80 @@ public class ThermoPackEngine : IDisposable
         return b;
     }
 
+    // ─── Fortran crash protection ────────────────────────────────────
+
+    public bool IsFaulted => _faulted;
+
+    private void CheckFaulted()
+    {
+        if (_faulted)
+            throw new InvalidOperationException(
+                "Fortran library has crashed. The engine is no longer usable. " +
+                "Re-initialize the property package to recover.");
+    }
+
+    /// <summary>
+    /// Execute a Fortran call with SEH protection. On AccessViolationException
+    /// (segfault), marks the engine as faulted and throws a managed exception
+    /// instead of crashing the host process.
+    /// </summary>
+    [HandleProcessCorruptedStateExceptions]
+    [SecurityCritical]
+    private void SafeCall(Action action, string operation)
+    {
+        try
+        {
+            action();
+        }
+        catch (AccessViolationException)
+        {
+            _faulted = true;
+            throw new InvalidOperationException(
+                $"Fortran library crashed (access violation) during {operation}. " +
+                "The engine is no longer usable.");
+        }
+        catch (SEHException ex)
+        {
+            _faulted = true;
+            throw new InvalidOperationException(
+                $"Fortran library crashed (SEH 0x{ex.ErrorCode:X8}) during {operation}. " +
+                "The engine is no longer usable.");
+        }
+    }
+
+    /// <summary>
+    /// Execute a Fortran call that returns a value, with SEH protection.
+    /// </summary>
+    [HandleProcessCorruptedStateExceptions]
+    [SecurityCritical]
+    private T SafeCall<T>(Func<T> func, string operation)
+    {
+        try
+        {
+            return func();
+        }
+        catch (AccessViolationException)
+        {
+            _faulted = true;
+            throw new InvalidOperationException(
+                $"Fortran library crashed (access violation) during {operation}. " +
+                "The engine is no longer usable.");
+        }
+        catch (SEHException ex)
+        {
+            _faulted = true;
+            throw new InvalidOperationException(
+                $"Fortran library crashed (SEH 0x{ex.ErrorCode:X8}) during {operation}. " +
+                "The engine is no longer usable.");
+        }
+    }
+
     public void Dispose()
     {
         if (_disposed) return;
         _disposed = true;
 
-        if (_modelIndex > 0)
+        if (_modelIndex > 0 && !_faulted)
         {
             try
             {

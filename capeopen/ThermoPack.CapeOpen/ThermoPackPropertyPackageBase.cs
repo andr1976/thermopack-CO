@@ -58,6 +58,7 @@ public abstract class ThermoPackPropertyPackageBase :
     private ICapeThermoMaterial? _material;
     protected List<Component> _selectedComponents = new();
     private bool _isDirty;
+    private string? _initError;
 
     // COM object references (must be released via Marshal.ReleaseComObject)
     private object? _simulationContext;
@@ -976,8 +977,12 @@ public abstract class ThermoPackPropertyPackageBase :
     private void EnsureInitialized()
     {
         if (_engine != null) return;
+        if (_initError != null)
+            throw new COMException(_initError, ECapeCalculation);
         EnsureStaticInit();
         RecreateEngine();
+        if (_initError != null)
+            throw new COMException(_initError, ECapeCalculation);
     }
 
     private void RecreateEngine()
@@ -985,13 +990,28 @@ public abstract class ThermoPackPropertyPackageBase :
         _engine?.Dispose();
         _engine = null;
         _lastResult = null;
+        _initError = null;
 
         if (_selectedComponents.Count == 0 || _sharedLib == null) return;
+
+        var validationError = ValidateComponents(_selectedComponents);
+        if (validationError != null)
+        {
+            _initError = validationError;
+            Log($"RecreateEngine: validation failed: {validationError}");
+            return;
+        }
 
         _engine = new ThermoPackEngine(_sharedLib);
         var compString = string.Join(",", _selectedComponents.Select(c => c.Ident));
         InitializeEngine(_engine, compString);
     }
+
+    /// <summary>
+    /// Validate the selected component list before engine creation.
+    /// Return null if valid, or an error message string if invalid.
+    /// </summary>
+    protected virtual string? ValidateComponents(List<Component> components) => null;
 
     private void EnsureFlashResult()
     {
