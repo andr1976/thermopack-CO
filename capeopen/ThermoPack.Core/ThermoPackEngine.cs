@@ -21,12 +21,21 @@ public class ThermoPackEngine : IDisposable
     private int _nc;
     private bool _disposed;
 
-    // Static: if ANY engine's Fortran call hangs/crashes, the shared library
-    // state is compromised and ALL engines must fail fast (they share a static lock).
+    // When a Fortran call hangs or crashes, the worker thread is suspended
+    // (to prevent ExitProcess) while still holding _lock.  We set _faulted
+    // so the NEXT call knows to recover: it replaces _lock with a fresh
+    // object (abandoning the old one held by the dead thread) and retries.
     private static volatile bool _faulted;
 
-    // Thread safety: Fortran global state is not thread-safe
-    private static readonly object _lock = new();
+    // Thread safety: Fortran global state is not thread-safe.
+    // NOT readonly — replaced on recovery after a fault.
+    private static object _lock = new();
+
+    // Each thread remembers which lock object it acquired, so
+    // ReleaseFortranLock always exits the correct object even if
+    // _lock was replaced between Acquire and Release.
+    [ThreadStatic]
+    private static object? _heldLock;
 
     // Phase flags (set once from Fortran)
     private static int _LIQPH = 1;
@@ -1218,7 +1227,8 @@ public class ThermoPackEngine : IDisposable
     /// </summary>
     private T RunWithTimeout<T>(Func<T> work, string operation)
     {
-        CheckFaulted();
+        // Recovery from a previous fault (if any) happens inside
+        // AcquireFortranLock, which is called by the work() lambda.
 
         if (FlashTimeoutMs <= 0)
             return work();
@@ -1370,38 +1380,45 @@ public class ThermoPackEngine : IDisposable
     // ─── Fortran lock helpers ────────────────────────────────────────
 
     /// <summary>
-    /// Acquires the Fortran lock with a timeout. Checks faulted state first
-    /// to avoid blocking on a lock permanently held by a stuck worker thread.
+    /// Acquires the Fortran lock with a timeout.
+    /// If the previous call faulted (stuck thread holding the old lock),
+    /// automatically recovers by creating a new lock object.
     /// Caller MUST use try/finally { ReleaseFortranLock(); }.
     /// </summary>
     private static void AcquireFortranLock()
     {
-        CheckFaulted();
+        if (_faulted)
+        {
+            // The old _lock is permanently held by a suspended/dead thread.
+            // Create a fresh lock so new operations can proceed.
+            _lock = new object();
+            _faulted = false;
+        }
+
+        var lockRef = _lock; // capture for this acquire/release pair
         int timeout = FlashTimeoutMs > 0 ? FlashTimeoutMs : 30000;
         bool taken = false;
-        Monitor.TryEnter(_lock, timeout, ref taken);
+        Monitor.TryEnter(lockRef, timeout, ref taken);
         if (!taken)
         {
             _faulted = true;
             throw new InvalidOperationException(
-                "Fortran lock acquisition timed out — a previous calculation may be stuck. " +
-                "All ThermoPack engines are disabled — restart the application to recover.");
+                "Fortran lock acquisition timed out — a previous calculation may be stuck.");
         }
+        _heldLock = lockRef;
     }
 
-    private static void ReleaseFortranLock() => Monitor.Exit(_lock);
+    private static void ReleaseFortranLock()
+    {
+        var held = _heldLock;
+        _heldLock = null;
+        if (held != null)
+            Monitor.Exit(held);
+    }
 
     // ─── Fortran crash protection ────────────────────────────────────
 
     public static bool IsFaulted => _faulted;
-
-    private static void CheckFaulted()
-    {
-        if (_faulted)
-            throw new InvalidOperationException(
-                "Fortran library has faulted (a previous calculation timed out or crashed). " +
-                "All ThermoPack engines are disabled — restart the application to recover.");
-    }
 
     /// <summary>
     /// Execute a Fortran call with SEH protection. On AccessViolationException
@@ -1468,12 +1485,13 @@ public class ThermoPackEngine : IDisposable
         {
             try
             {
+                var lockRef = _lock;
                 bool taken = false;
-                Monitor.TryEnter(_lock, 2000, ref taken);
+                Monitor.TryEnter(lockRef, 2000, ref taken);
                 if (taken)
                 {
                     try { _deleteEos!(ref _modelIndex); }
-                    finally { Monitor.Exit(_lock); }
+                    finally { Monitor.Exit(lockRef); }
                 }
                 // If lock acquisition fails (stuck thread), skip cleanup silently
             }
